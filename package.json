@@ -1,0 +1,25 @@
+{
+  "name": "fodeez-nutz",
+  "private": true,
+  "version": "1.0.0",
+  "description": "A Foddian climbing game: a wheelchair user, a plunger grappling hook, and no checkpoints.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "route": "vitest run tests/route.test.ts"
+  },
+  "devDependencies": {
+    "@fontsource/pixelify-sans": "5.3.0",
+    "@playwright/test": "1.64.1",
+    "@types/node": "^24.19.2",
+    "typescript": "7.0.2",
+    "vite": "8.3.4",
+    "vitest": "5.0.5"
+  }
+}
