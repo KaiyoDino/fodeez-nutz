@@ -6,3 +6,4 @@ playwright-report/
 .DS_Store
 tests/_trace.txt
 screenshots/
+tests/_lab.txt

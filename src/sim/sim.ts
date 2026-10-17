@@ -1,11 +1,12 @@
-import { DUDE, heightOf, LEVEL, START, TELEPORTS } from './level';
+import { DUDE, getMap, heightOf, MAPS, type MapDef, type MapId } from './level';
 import { applyNewAgeInput, handOf, newNewAgeState, stepNewAge, type NewAgeState } from './newage';
 import { applyOriginalInput, HOOK_SIZE, newOriginalState, stepOriginal, type OriginalState } from './original';
 import type { DudeState, DudeView, HookView, InputEvent, Mode, SimEvent, Stats } from './types';
 import { GOOP_TICKS, MAX_GRAPPLES } from './types';
-import { newWorld, updateAbove, updateCameos, type WorldState } from './world';
+import { mapOf, newWorld, updateAbove, updateCameos, type WorldState } from './world';
 
-export const SAVE_VERSION = 1;
+/** v2 added maps (v1 saves are tower runs and are migrated on load). */
+export const SAVE_VERSION = 2;
 /** A drop bigger than this (world px) counts as a fall in the stats. */
 export const FALL_THRESHOLD = 400;
 
@@ -24,31 +25,51 @@ export interface SimState {
   won: boolean;
 }
 
-export function newSimState(mode: Mode, seed: number): SimState {
-  const dude: DudeState = { x: START.x, y: START.y, vx: 0, vy: 0, facing: 1 };
+export function newSimState(mode: Mode, seed: number, map: MapId = 'tower'): SimState {
+  const m = getMap(map);
+  const dude: DudeState = { x: m.start.x, y: m.start.y, vx: 0, vy: 0, facing: 1 };
   return {
     v: SAVE_VERSION,
     mode,
     seed,
     rng: seed >>> 0,
     dude,
-    world: newWorld(mode),
-    original: mode === 'original' ? newOriginalState(dude) : null,
+    world: newWorld(map, mode),
+    original: mode === 'original' ? newOriginalState(dude, m.platforms.length) : null,
     newage: mode === 'newage' ? newNewAgeState() : null,
     stats: { ticks: 0, falls: 0, biggestFall: 0, goopResets: 0, grapples: 0, bestHeight: 0 },
-    airPeakY: START.y,
+    airPeakY: m.start.y,
     won: false,
   };
+}
+
+/** Bring a v1 save (tower only, one shared mover flag) up to date. */
+function migrate(s: SimState): void {
+  if (s.v !== 1) return;
+  const w = s.world as WorldState & { map?: MapId };
+  w.map = 'tower';
+  const o = s.original as (OriginalState & { reversed: boolean | boolean[]; reversedSticky?: boolean }) | null;
+  if (o) {
+    const flag = o.reversed === true;
+    o.reversed = new Array(MAPS.tower.platforms.length).fill(flag);
+    o.stuckMover = o.onSticky && o.onMoving ? MAPS.tower.platforms.findIndex(p => p.kind === 'goop' && p.mover) : -1;
+    delete o.reversedSticky;
+  }
+  s.v = SAVE_VERSION;
 }
 
 /** Validate a parsed save. Returns null if it isn't a usable state. */
 export function loadSimState(raw: unknown): SimState | null {
   if (!raw || typeof raw !== 'object') return null;
   const s = raw as SimState;
-  if (s.v !== SAVE_VERSION || (s.mode !== 'original' && s.mode !== 'newage')) return null;
+  if ((s.v !== SAVE_VERSION && s.v !== 1) || (s.mode !== 'original' && s.mode !== 'newage')) return null;
   if (!s.dude || !s.world || !s.stats || !Array.isArray(s.world.platX) || s.world.mode !== s.mode) return null;
+  migrate(s);
+  if (!(s.world.map in MAPS)) return null;
   // a save from a different version of the map can't be resumed
-  if (s.world.platX.length !== LEVEL.length || s.world.platDx.length !== LEVEL.length) return null;
+  const count = MAPS[s.world.map].platforms.length;
+  if (s.world.platX.length !== count || s.world.platDx.length !== count) return null;
+  if (s.original && (!Array.isArray(s.original.reversed) || s.original.reversed.length !== count)) return null;
   if (s.mode === 'original' && !s.original) return null;
   if (s.mode === 'newage' && !s.newage) return null;
   const nums = [s.dude.x, s.dude.y, s.dude.vx, s.dude.vy];
@@ -63,12 +84,20 @@ export class Sim {
     this.state = state;
   }
 
-  static create(mode: Mode, seed: number): Sim {
-    return new Sim(newSimState(mode, seed));
+  static create(mode: Mode, seed: number, map: MapId = 'tower'): Sim {
+    return new Sim(newSimState(mode, seed, map));
   }
 
   get mode(): Mode {
     return this.state.mode;
+  }
+
+  get mapId(): MapId {
+    return this.state.world.map;
+  }
+
+  get map(): MapDef {
+    return mapOf(this.state.world);
   }
 
   /** Advance one 1/60 s tick. Inputs are applied first, like the Java mouse handlers firing between timer ticks. */
@@ -107,7 +136,7 @@ export class Sim {
     } else {
       s.airPeakY = Math.min(s.airPeakY, d.y);
     }
-    s.stats.bestHeight = Math.max(s.stats.bestHeight, heightOf(d.y));
+    s.stats.bestHeight = Math.max(s.stats.bestHeight, heightOf(mapOf(s.world), d.y));
 
     if (result.won) {
       s.won = true;
@@ -119,7 +148,7 @@ export class Sim {
   /** Debug teleport to one of the original's four dev-key spots. */
   teleport(index: number): SimEvent[] {
     const s = this.state;
-    const to = TELEPORTS[index];
+    const to = mapOf(s.world).teleports[index];
     if (!to || s.won) return [];
     s.dude.x = to.x;
     s.dude.y = to.y;

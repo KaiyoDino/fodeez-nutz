@@ -2,7 +2,7 @@
 // a man in a cauldron with a hammer, a fallen little king, and a kid on a pogo stick.
 // All original pixel art, drawn procedurally.
 
-import { CAMEOS } from '../sim/level';
+import type { Cameo } from '../sim/level';
 import { SCALE } from './level-art';
 import { P } from './palette';
 import { ctx2d, dot, ellipse, line, makeCanvas, outline, rect, type Ctx } from './px';
@@ -121,11 +121,11 @@ function pogoKid(frame: number): HTMLCanvasElement {
 }
 
 /** Draw the cameos (world px placement from the original), faded in by `alpha`. */
-export function drawCameos(ctx: Ctx, camX: number, camY: number, t: number, alpha: number): void {
+export function drawCameos(ctx: Ctx, cameos: readonly Cameo[], camX: number, camY: number, t: number, alpha: number): void {
   if (alpha <= 0) return;
   ctx.save();
   ctx.globalAlpha = Math.min(1, alpha);
-  for (const cam of CAMEOS) {
+  for (const cam of cameos) {
     const x = Math.round(cam.x / SCALE - camX);
     const bottom = Math.round((cam.y + cam.h) / SCALE - camY);
     if (cam.id === 'cauldron') {

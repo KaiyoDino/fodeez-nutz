@@ -11,10 +11,10 @@
 // - You ride moving platforms properly: your rolling is relative to the platform.
 // - Goop holds you while you slowly slide off (15 px/s). After 160 ticks it lets go.
 
-import { DUDE, LEVEL } from './level';
+import { DUDE, type PlatformDef } from './level';
 import type { DudeState, InputEvent, SimEvent, Surface } from './types';
 import { GOOP_TICKS, MAX_GRAPPLES } from './types';
-import { dudeOverlaps, isVisible, overlaps, platformBox, type Box, type WorldState } from './world';
+import { dudeOverlaps, isVisible, len, overlaps, platformBox, platformsOf, type Box, type WorldState } from './world';
 
 export const NA = {
   gravity: 0.6,
@@ -82,8 +82,7 @@ export function newNewAgeState(): NewAgeState {
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-const surfaceOf = (i: number): Surface => {
-  const p = LEVEL[i];
+const surfaceOf = (p: PlatformDef): Surface => {
   return p.kind === 'spring' ? 'spring' : p.kind === 'goop' ? 'goop' : p.mover ? 'mover' : 'girder';
 };
 
@@ -92,11 +91,11 @@ const surfaceOf = (i: number): Surface => {
  * below, and they still catch you from above. The pad under the gap into area 3 would
  * otherwise seal that gap from below.
  */
-const isOneWay = (i: number): boolean => LEVEL[i].kind === 'spring' && LEVEL[i].w > LEVEL[i].h;
+export const isOneWay = (p: PlatformDef): boolean => p.kind === 'spring' && p.w > p.h;
 
 /** Solid for the dude: everything visible except plain targets. */
 function isSolid(i: number, world: WorldState): boolean {
-  const p = LEVEL[i];
+  const p = platformsOf(world)[i];
   if (!isVisible(p, world)) return false;
   if (p.kind === 'target') return p.role === 'troll';
   return true;
@@ -119,13 +118,13 @@ export function applyNewAgeInput(d: DudeState, n: NewAgeState, ev: InputEvent, e
     const hand = handOf(d);
     const dx = ev.x - hand.x;
     const dy = ev.y - hand.y;
-    const len = Math.hypot(dx, dy);
-    if (len < 1) return;
+    const l = len(dx, dy);
+    if (l < 1) return;
     if (n.grapples >= MAX_GRAPPLES) {
       events.push({ type: 'hookCancel', x: hand.x, y: hand.y, reason: 'spent' });
       return;
     }
-    n.hook = { state: 'flying', x: hand.x, y: hand.y, vx: (dx / len) * NA.hookSpeed, vy: (dy / len) * NA.hookSpeed, traveled: 0, len: 0, target: -1, held: 0 };
+    n.hook = { state: 'flying', x: hand.x, y: hand.y, vx: (dx / l) * NA.hookSpeed, vy: (dy / l) * NA.hookSpeed, traveled: 0, len: 0, target: -1, held: 0 };
     events.push({ type: 'hookFire', x: hand.x, y: hand.y });
   } else {
     n.pressed = false;
@@ -141,15 +140,16 @@ export function applyNewAgeInput(d: DudeState, n: NewAgeState, ev: InputEvent, e
 
 /** Ping-pong the moving platforms between x and x + range. */
 function moveMovers(world: WorldState): void {
-  for (let i = 0; i < LEVEL.length; i++) {
-    const m = LEVEL[i].mover;
+  const L = platformsOf(world);
+  for (let i = 0; i < L.length; i++) {
+    const m = L[i].mover;
     if (!m) continue;
     let x = world.platX[i] + world.platDx[i];
-    if (x > LEVEL[i].x + m.range) {
-      x = LEVEL[i].x + m.range;
+    if (x > L[i].x + m.range) {
+      x = L[i].x + m.range;
       world.platDx[i] = -m.speed;
-    } else if (x < LEVEL[i].x) {
-      x = LEVEL[i].x;
+    } else if (x < L[i].x) {
+      x = L[i].x;
       world.platDx[i] = m.speed;
     }
     world.platX[i] = x;
@@ -157,6 +157,7 @@ function moveMovers(world: WorldState): void {
 }
 
 interface Ctx {
+  L: readonly PlatformDef[];
   d: DudeState;
   n: NewAgeState;
   world: WorldState;
@@ -185,12 +186,12 @@ function stick(c: Ctx, i: number, side: Side, p: Box): void {
 }
 
 function resolveX(c: Ctx): void {
-  const { d, n, world } = c;
-  for (let i = 0; i < LEVEL.length; i++) {
-    if (!isSolid(i, world) || isOneWay(i)) continue;
+  const { d, n, world, L } = c;
+  for (let i = 0; i < L.length; i++) {
+    if (!isSolid(i, world) || isOneWay(L[i])) continue;
     const p = platformBox(world, i);
     if (!dudeOverlaps(d.x, d.y, p)) continue;
-    const def = LEVEL[i];
+    const def = L[i];
     if (def.kind === 'goal') {
       c.won = true;
       continue;
@@ -214,19 +215,19 @@ function resolveX(c: Ctx): void {
       const bounce = def.kind === 'goop' ? 0 : NA.wallBounce;
       d.vx = pv + away * speed * bounce;
       d.facing = away as 1 | -1;
-      if (speed > 2) c.events.push({ type: 'bump', speed, x: hitLeftSide ? p.x : p.x + p.w, y: d.y + DUDE.h / 2, axis: 'x', surface: surfaceOf(i) });
+      if (speed > 2) c.events.push({ type: 'bump', speed, x: hitLeftSide ? p.x : p.x + p.w, y: d.y + DUDE.h / 2, axis: 'x', surface: surfaceOf(L[i]) });
     }
   }
 }
 
 function resolveY(c: Ctx, prevY: number): void {
-  const { d, n, world } = c;
-  for (let i = 0; i < LEVEL.length; i++) {
+  const { d, n, world, L } = c;
+  for (let i = 0; i < L.length; i++) {
     if (!isSolid(i, world)) continue;
     const p = platformBox(world, i);
     if (!dudeOverlaps(d.x, d.y, p)) continue;
-    if (isOneWay(i) && (d.vy < 0 || prevY + DUDE.h > p.y + 0.5)) continue;
-    const def = LEVEL[i];
+    if (isOneWay(L[i]) && (d.vy < 0 || prevY + DUDE.h > p.y + 0.5)) continue;
+    const def = L[i];
     if (def.kind === 'goal') {
       c.won = true;
       continue;
@@ -252,7 +253,7 @@ function resolveY(c: Ctx, prevY: number): void {
       n.ground = i;
       n.grapples = 0;
       c.landed = true;
-      if (speed > 3) c.events.push({ type: 'land', speed, x: d.x + DUDE.w / 2, y: p.y, surface: surfaceOf(i) });
+      if (speed > 3) c.events.push({ type: 'land', speed, x: d.x + DUDE.w / 2, y: p.y, surface: surfaceOf(L[i]) });
     } else {
       d.y = p.y + p.h;
       if (def.kind === 'goop' && n.noRegrab !== i) {
@@ -264,7 +265,7 @@ function resolveY(c: Ctx, prevY: number): void {
         c.events.push({ type: 'spring', speed, x: d.x + DUDE.w / 2, y: p.y + p.h, axis: 'y' });
       } else {
         d.vy = speed * (def.kind === 'goop' ? 0 : NA.ceilingBounce);
-        if (speed > 2) c.events.push({ type: 'bump', speed, x: d.x + DUDE.w / 2, y: p.y + p.h, axis: 'y', surface: surfaceOf(i) });
+        if (speed > 2) c.events.push({ type: 'bump', speed, x: d.x + DUDE.w / 2, y: p.y + p.h, axis: 'y', surface: surfaceOf(L[i]) });
       }
     }
   }
@@ -277,8 +278,9 @@ function touching(d: DudeState, p: Box, side: Side): boolean {
 }
 
 function blockedAnywhere(d: DudeState, world: WorldState, except: number): boolean {
-  for (let i = 0; i < LEVEL.length; i++) {
-    if (i === except || !isSolid(i, world) || LEVEL[i].kind === 'goal') continue;
+  const L = platformsOf(world);
+  for (let i = 0; i < L.length; i++) {
+    if (i === except || !isSolid(i, world) || L[i].kind === 'goal') continue;
     if (dudeOverlaps(d.x, d.y, platformBox(world, i))) return true;
   }
   return false;
@@ -314,7 +316,7 @@ function updateStuck(c: Ctx): void {
 }
 
 function updateHook(c: Ctx): void {
-  const { d, n, world } = c;
+  const { d, n, world, L } = c;
   const h = n.hook;
   if (h.state === 'flying') {
     const steps = 3;
@@ -322,9 +324,9 @@ function updateHook(c: Ctx): void {
       h.x += h.vx / steps;
       h.y += h.vy / steps;
       h.traveled += NA.hookSpeed / steps;
-      for (let i = 0; i < LEVEL.length; i++) {
-        const def = LEVEL[i];
-        if (!isVisible(def, world) || def.kind === 'goal' || isOneWay(i)) continue;
+      for (let i = 0; i < L.length; i++) {
+        const def = L[i];
+        if (!isVisible(def, world) || def.kind === 'goal' || isOneWay(L[i])) continue;
         const p = platformBox(world, i);
         if (!overlaps(h.x - NA.hookRadius, h.y - NA.hookRadius, NA.hookRadius * 2, NA.hookRadius * 2, p)) continue;
         if (def.kind === 'target') {
@@ -339,7 +341,7 @@ function updateHook(c: Ctx): void {
           h.y = p.y + p.h / 2;
           h.held = 0;
           const hand = handOf(d);
-          h.len = Math.max(NA.ropeMin, Math.hypot(hand.x - h.x, hand.y - h.y));
+          h.len = Math.max(NA.ropeMin, len(hand.x - h.x, hand.y - h.y));
           n.grapples++;
           if (n.stuck) {
             n.noRegrab = n.stuck.i;
@@ -349,9 +351,9 @@ function updateHook(c: Ctx): void {
           // a tug toward the plunger to start the swing
           const dx = h.x - hand.x;
           const dy = h.y - hand.y;
-          const len = Math.hypot(dx, dy) || 1;
-          d.vx += (dx / len) * NA.attachTug;
-          d.vy += (dy / len) * NA.attachTug;
+          const l = len(dx, dy) || 1;
+          d.vx += (dx / l) * NA.attachTug;
+          d.vy += (dy / l) * NA.attachTug;
           c.events.push({ type: 'hookAttach', x: h.x, y: h.y });
         } else {
           releaseHook(n);
@@ -366,7 +368,7 @@ function updateHook(c: Ctx): void {
     }
   } else if (h.state === 'attached') {
     // The troll target vanishes once you're above the floor; the plunger loses its grip.
-    if (!isVisible(LEVEL[h.target], world)) {
+    if (!isVisible(L[h.target], world)) {
       releaseHook(n);
       c.events.push({ type: 'hookRelease', x: h.x, y: h.y, auto: true });
       return;
@@ -392,7 +394,7 @@ function applyRope(c: Ctx): void {
   const py = hand.y + d.vy;
   const dx = px - h.x;
   const dy = py - h.y;
-  const dist = Math.hypot(dx, dy);
+  const dist = len(dx, dy);
   if (dist > h.len) {
     const k = h.len / dist;
     d.vx = h.x + dx * k - hand.x;
@@ -408,7 +410,8 @@ export interface NewAgeTickResult {
 export function stepNewAge(d: DudeState, n: NewAgeState, world: WorldState, events: SimEvent[]): NewAgeTickResult {
   const oldDx = world.platDx.slice();
   moveMovers(world);
-  const c: Ctx = { d, n, world, events, won: false, landed: false, pdx: world.platDx };
+  const L = platformsOf(world);
+  const c: Ctx = { L, d, n, world, events, won: false, landed: false, pdx: world.platDx };
 
   if (n.noRegrab >= 0) {
     const p = platformBox(world, n.noRegrab);
@@ -428,7 +431,7 @@ export function stepNewAge(d: DudeState, n: NewAgeState, world: WorldState, even
   const ground = n.ground;
   n.ground = -1;
   // stay synced with a moving platform when it turns around (as if the wheels grip)
-  if (ground >= 0 && LEVEL[ground].mover) d.vx += world.platDx[ground] - oldDx[ground];
+  if (ground >= 0 && L[ground].mover) d.vx += world.platDx[ground] - oldDx[ground];
 
   d.vy += NA.gravity;
 
@@ -446,7 +449,7 @@ export function stepNewAge(d: DudeState, n: NewAgeState, world: WorldState, even
   applyRope(c);
 
   if (n.hook.state !== 'attached') d.vy = Math.min(d.vy, NA.maxFall);
-  const speed = Math.hypot(d.vx, d.vy);
+  const speed = len(d.vx, d.vy);
   if (speed > NA.maxSpeed) {
     d.vx *= NA.maxSpeed / speed;
     d.vy *= NA.maxSpeed / speed;

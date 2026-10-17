@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { LEVEL, START } from '../src/sim/level';
+import { TOWER } from '../src/sim/level';
 import { handOf, NA } from '../src/sim/newage';
 import { indexWhere, place, press, release, run, sim, targetCenter } from './helpers';
+
+const LEVEL = TOWER.platforms;
+const START = TOWER.start;
 
 const firstTarget = indexWhere(p => p.kind === 'target' && p.x === 850 && p.y === 3450);
 

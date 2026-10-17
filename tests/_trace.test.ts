@@ -1,26 +1,18 @@
+// Dev tool: TRACE=tower-newage npx vitest run tests/_trace.test.ts writes tests/_trace.txt,
+// a tick-by-tick log of a recorded route (inputs and interesting events).
 import { readFileSync, writeFileSync } from 'node:fs';
 import { it } from 'vitest';
-import type { InputEvent } from '../src/sim/types';
-import { Sim } from '../src/sim/sim';
-import type { Route } from './route-finder';
+import { ReplayRunner, type Replay } from '../src/sim/replay';
 
-// Dev tool: TRACE_MODE=original|newage npx vitest run tests/_trace.test.ts writes tests/_trace.txt
-it.skipIf(!process.env.TRACE_MODE)('trace', () => {
-  const mode = process.env.TRACE_MODE ?? 'original';
-  const route = JSON.parse(readFileSync(`tests/routes/${mode}.json`, 'utf8')) as Route;
-  const sim = Sim.create(route.mode, route.seed);
-  const by = new Map<number, InputEvent[]>();
-  for (const i of route.inputs) {
-    const l = by.get(i.tick) ?? [];
-    l.push(i);
-    by.set(i.tick, l);
-  }
+it.skipIf(!process.env.TRACE)('trace', () => {
+  const route = JSON.parse(readFileSync(`src/data/routes/${process.env.TRACE}.json`, 'utf8')) as Replay;
+  const r = new ReplayRunner(route);
   const lines: string[] = [];
-  while (!sim.state.won && sim.state.stats.ticks < 4000) {
-    const t = sim.state.stats.ticks;
-    const inp = by.get(t) ?? [];
-    const ev = sim.step(inp);
-    const d = sim.state.dude;
+  while (!r.done) {
+    const t = r.tick;
+    const inp = r.pending();
+    const ev = r.step();
+    const d = r.sim.state.dude;
     if (inp.length || t % 10 === 0 || ev.some(e => e.type !== 'land'))
       lines.push(`${t} (${d.x.toFixed(0)},${d.y.toFixed(0)}) v(${d.vx.toFixed(1)},${d.vy.toFixed(1)}) ${inp.map(i => i.kind + '@' + i.x.toFixed(0) + ',' + i.y.toFixed(0)).join(' ')} ${ev.map(e => e.type).join(',')}`);
   }

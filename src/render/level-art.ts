@@ -1,13 +1,14 @@
 // Level art. Everything is drawn in game pixels (1 px = 2 world units).
 // Static things are painted once into a world-sized canvas; animated things are drawn per frame.
 
-import { CAMEOS, LEVEL, WORLD, type PlatformDef } from '../sim/level';
+import type { MapDef, MapId, PlatformDef } from '../sim/level';
 import { drawText, textWidth } from './font';
 import { BAYER4, P } from './palette';
-import { ctx2d, dot, line, makeCanvas, rect, type Ctx } from './px';
+import { ctx2d, dot, ellipse, line, makeCanvas, rect, type Ctx } from './px';
 
 export const SCALE = 2;
-export const WORLD_PX = { w: WORLD.w / SCALE, h: WORLD.h / SCALE };
+/** A map's size in game pixels. */
+export const worldPx = (map: MapDef) => ({ w: map.world.w / SCALE, h: map.world.h / SCALE });
 
 interface PxBox {
   x: number;
@@ -253,6 +254,40 @@ export function drawGoalRoom(ctx: Ctx, b: PxBox): void {
   drawText(ctx, label, bx + 8, by + 6, P.white, s);
 }
 
+/** The crane's goal: the hook block hanging off the end of the jib, with a little finish flag. */
+export function drawHookBlock(ctx: Ctx, b: PxBox): void {
+  const cx = b.x + Math.round(b.w / 2);
+  // block
+  const bw = 36;
+  const bh = 20;
+  const bx = cx - bw / 2;
+  const by = b.y;
+  rect(ctx, bx - 1, by - 1, bw + 2, bh + 2, P.ink);
+  rect(ctx, bx, by, bw, bh, P.y1);
+  rect(ctx, bx, by, bw, 2, P.y2);
+  rect(ctx, bx, by + bh - 3, bw, 3, P.y0);
+  for (let i = 0; i < bw; i++) if (((i >> 1) & 1) === 0) rect(ctx, bx + i, by + 8, 1, 4, P.black);
+  ellipse(ctx, cx, by + 4, 5, 3, P.s1);
+  dot(ctx, cx, by + 4, P.s3);
+  // shank and hook
+  rect(ctx, cx - 2, by + bh, 4, 7, P.s2);
+  rect(ctx, cx - 2, by + bh, 1, 7, P.s4);
+  const hy = by + bh + 15;
+  for (let a = -0.3; a < Math.PI * 1.15; a += 0.05) {
+    const x = cx + Math.cos(a) * 9;
+    const y = hy + Math.sin(a) * 9;
+    rect(ctx, x - 2, y - 2, 4, 4, P.ink);
+  }
+  for (let a = -0.3; a < Math.PI * 1.15; a += 0.05) {
+    const x = cx + Math.cos(a) * 9;
+    const y = hy + Math.sin(a) * 9;
+    rect(ctx, x - 1, y - 1, 2, 2, a < 1.4 ? P.s4 : P.s2);
+  }
+  // finish flag on the side of the block
+  rect(ctx, bx + bw + 2, by - 10, 1, 16, P.s4);
+  for (let i = 0; i < 4; i++) for (let j = 0; j < 3; j++) rect(ctx, bx + bw + 3 + i * 3, by - 10 + j * 3, 3, 3, (i + j) % 2 ? P.black : P.white);
+}
+
 // ---------------------------------------------------------------- decorations
 
 /** A sign. With `ground` set, (x, y) is ignored for y and it stands on posts reaching down to that ground line. */
@@ -290,33 +325,25 @@ function lamp(ctx: Ctx, x: number, y: number, cable: number): void {
 }
 
 /** The skeleton of the building behind everything: dim columns and beams. */
-function backFrame(ctx: Ctx): void {
+function backFrame(ctx: Ctx, wpx: { w: number; h: number }): void {
   ctx.globalAlpha = 0.55;
   const col = '#241c40';
   const col2 = '#3a2f63';
   for (const cx of [250, 500, 750]) {
-    rect(ctx, cx - 4, 50, 8, WORLD_PX.h - 100, col);
-    rect(ctx, cx - 4, 50, 1, WORLD_PX.h - 100, col2);
+    rect(ctx, cx - 4, 50, 8, wpx.h - 100, col);
+    rect(ctx, cx - 4, 50, 1, wpx.h - 100, col2);
   }
-  for (let by = 250; by < WORLD_PX.h - 60; by += 220) {
-    rect(ctx, 50, by, WORLD_PX.w - 100, 5, col);
-    rect(ctx, 50, by, WORLD_PX.w - 100, 1, col2);
+  for (let by = 250; by < wpx.h - 60; by += 220) {
+    rect(ctx, 50, by, wpx.w - 100, 5, col);
+    rect(ctx, 50, by, wpx.w - 100, 1, col2);
   }
   ctx.globalAlpha = 1;
 }
 
-export interface StaticLayer {
-  canvas: HTMLCanvasElement;
-}
-
-/** Paint everything that never moves (in both modes) into one world-sized canvas. */
-export function buildStaticLayer(): StaticLayer {
-  const c = makeCanvas(WORLD_PX.w, WORLD_PX.h);
-  const ctx = ctx2d(c);
-  backFrame(ctx);
-
-  // decorations (world px coordinates)
-  const floor = WORLD_PX.h - 50;
+/** The tower's signs, lamps and stencils (world px coordinates). */
+function decorTower(ctx: Ctx, wpx: { w: number; h: number }): void {
+  backFrame(ctx, wpx);
+  const floor = wpx.h - 50;
   sign(ctx, 70, 0, ['FODEEZ NUTZ', 'CONSTRUCTION CO.'], P.y1, P.ink, { posts: 40, ground: floor, stripes: true });
   sign(ctx, 600, 0, ['NO', 'CHECKPOINTS'], P.white, P.r0, { posts: 22, ground: floor });
   sign(ctx, 866, 0, ['EXIT ;('], P.green, P.ink, { ground: floor - 50 });
@@ -337,19 +364,108 @@ export function buildStaticLayer(): StaticLayer {
   stencil(15, 1150, '2');
   stencil(965, 420, '3');
   stencil(15, 280, '4');
+}
 
-  for (let i = 0; i < LEVEL.length; i++) {
-    const def = LEVEL[i];
+const DECOR: Record<MapId, (ctx: Ctx, wpx: { w: number; h: number }) => void> = {
+  tower: decorTower,
+  crane: (ctx, wpx) => decorCrane(ctx, wpx),
+};
+
+export interface StaticLayer {
+  canvas: HTMLCanvasElement;
+}
+
+/** Paint everything that never moves (in both modes) into one map-sized canvas. */
+export function buildStaticLayer(map: MapDef): StaticLayer {
+  const wpx = worldPx(map);
+  const c = makeCanvas(wpx.w, wpx.h);
+  const ctx = ctx2d(c);
+  DECOR[map.id](ctx, wpx);
+
+  const plats = map.platforms;
+  for (let i = 0; i < plats.length; i++) {
+    const def = plats[i];
     // movers, map tricks and mode-only pieces are drawn every frame instead
     if (def.mover || def.role || def.onlyIn) continue;
     const b = toPx(def);
     if (def.kind === 'girder') drawGirder(ctx, b, def.w >= 100 && def.h >= 100);
     else if (def.kind === 'goop') drawGoopBody(ctx, b);
-    else if (def.kind === 'goal') drawGoalRoom(ctx, b);
+    else if (def.kind === 'goal') (map.id === 'crane' ? drawHookBlock : drawGoalRoom)(ctx, b);
   }
-  // outer walls on top so corners are clean
-  for (let i = 0; i < 4; i++) drawGirder(ctx, toPx(LEVEL[i]), true);
+  // outer walls (always the first four platforms) on top so corners are clean
+  for (let i = 0; i < 4; i++) drawGirder(ctx, toPx(plats[i]), true);
   return { canvas: c };
 }
 
-export { toPx, CAMEOS };
+// ---------------------------------------------------------------- the crane's decorations
+
+function decorCrane(ctx: Ctx, wpx: { w: number; h: number }): void {
+  const col = '#241c40';
+  const col2 = '#3a2f63';
+  // the lattice mast behind the play area, from the jib down to the footing
+  ctx.globalAlpha = 0.55;
+  const mx0 = 480;
+  const mx1 = 720;
+  for (const cx of [mx0, mx1]) {
+    rect(ctx, cx - 4, 120, 8, wpx.h - 170, col);
+    rect(ctx, cx - 4, 120, 1, wpx.h - 170, col2);
+  }
+  for (let y = 130; y < wpx.h - 60; y += 80) {
+    line(ctx, mx0, y, mx1, y + 40, col);
+    line(ctx, mx1, y + 40, mx0, y + 80, col);
+    rect(ctx, mx0, y, mx1 - mx0, 2, col);
+  }
+  // the peak above the jib, and its stays out to the jib tip and the counter-jib
+  line(ctx, mx0, 120, 600, 60, col);
+  line(ctx, mx1, 120, 600, 60, col);
+  line(ctx, 600, 60, 180, 240, col);
+  line(ctx, 600, 60, 1100, 240, col);
+  ctx.globalAlpha = 1;
+  // concrete footing under the mast (dim, so it doesn't read as something to stand on)
+  ctx.globalAlpha = 0.55;
+  rect(ctx, mx0 - 30, wpx.h - 80, mx1 - mx0 + 60, 30, col);
+  rect(ctx, mx0 - 30, wpx.h - 80, mx1 - mx0 + 60, 2, col2);
+  ctx.globalAlpha = 1;
+  // the operator's cab, sitting on the cab floor (world 1850-2300 x 950)
+  const cabX = 960;
+  const cabY = 400;
+  rect(ctx, cabX - 1, cabY - 1, 132, 77, P.ink);
+  rect(ctx, cabX, cabY, 130, 75, '#3a3f5c');
+  rect(ctx, cabX, cabY, 130, 3, '#555b7c');
+  for (let i = 0; i < 4; i++) {
+    rect(ctx, cabX + 8 + i * 30, cabY + 14, 22, 22, '#1d2033');
+    rect(ctx, cabX + 9 + i * 30, cabY + 15, 20, 20, i === 1 ? '#ffcd78' : '#2b3150');
+  }
+  drawText(ctx, 'CRANE 2', cabX + 34, cabY + 50, P.y1, 2);
+  // the hook block's cables
+  for (const x of [205, 235]) rect(ctx, x, 265, 1, 115, P.s1);
+  // signs
+  const floor = wpx.h - 50;
+  sign(ctx, 360, 0, ['MAX LOAD:', '1 DUDE'], P.y1, P.ink, { posts: 30, ground: floor, stripes: true });
+  sign(ctx, 800, 0, ['AUTHORIZED', 'PERSONNEL', 'ONLY'], P.white, P.r0, { posts: 20, ground: floor });
+  sign(ctx, 965, 1700, ['CAUTION', 'GOOP'], P.y1, P.ink, { stripes: true });
+  sign(ctx, 470, 1420, ['MIND', 'THE GAP'], P.white, P.ink, {});
+  sign(ctx, 1010, 268, ['NO', 'SWINGING'], P.r1, P.white, {});
+  lamp(ctx, 760, 1960, 2);
+  lamp(ctx, 600, 265, 4);
+  lamp(ctx, 360, 265, 4);
+  // stencilled section numbers on the outer walls
+  const stencil = (x: number, y: number, n: string) => drawText(ctx, n, x, y, P.g1, 4);
+  stencil(15, 2700, '1');
+  stencil(15, 2150, '2');
+  stencil(1165, 1700, '3');
+  stencil(15, 1350, '4');
+  stencil(15, 900, '5');
+  stencil(1165, 380, '6');
+}
+
+/** Blinking aircraft warning lights (world units), drawn every frame. */
+export const BEACONS: Partial<Record<MapId, readonly { x: number; y: number }[]>> = {
+  crane: [
+    { x: 362, y: 468 },
+    { x: 2138, y: 468 },
+    { x: 1200, y: 120 },
+  ],
+};
+
+export { toPx };

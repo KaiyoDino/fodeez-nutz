@@ -2,7 +2,7 @@
 // resolution (1 px = 2 world units), upscaled by a whole number with no smoothing, then
 // smoothed down to the exact window size ("sharp bilinear") so pixels stay even.
 
-import { DUDE, heightOf, LEVEL, TELEPORTS, WORLD } from '../sim/level';
+import { DUDE, heightOf, TOWER, type MapDef, type MapId } from '../sim/level';
 import { handOf, NA } from '../sim/newage';
 import { HOOK_RANGE, HOOK_SIZE } from '../sim/original';
 import type { Sim } from '../sim/sim';
@@ -12,7 +12,7 @@ import { drawBackdrop, drawGround, drawSky, type View } from './background';
 import { drawCameos } from './cameos';
 import { drawDude, muzzleOf, SPRITE_H, SPRITE_W, type DudePose } from './dude';
 import { drawText, drawTextOutlined, textWidth } from './font';
-import { buildStaticLayer, drawGoopLife, drawSpring, girderCanvas, goopCanvas, SCALE, targetSprite, toPx, WORLD_PX } from './level-art';
+import { BEACONS, buildStaticLayer, drawGoopLife, drawSpring, girderCanvas, goopCanvas, SCALE, targetSprite, toPx, worldPx } from './level-art';
 import { P } from './palette';
 import { Particles } from './particles';
 import { ctx2d, dot, line, makeCanvas, rect, type Ctx } from './px';
@@ -46,6 +46,8 @@ export interface FrameInput {
   /** Show the crosshair and aim (false behind menus). */
   interactive: boolean;
   debug: boolean;
+  /** Set while watching a replay. */
+  replay?: { speed: number; paused: boolean } | null;
 }
 
 interface Message {
@@ -57,7 +59,6 @@ interface Message {
 }
 
 const lerp = (a: number, b: number, k: number) => a + (b - a) * k;
-const METERS = 40; // world px per meter for the HUD
 
 export class Renderer {
   readonly canvas: HTMLCanvasElement;
@@ -72,10 +73,12 @@ export class Renderer {
   private dpr = 1;
   private k = 1;
 
-  private platformArt = new Map<number, HTMLCanvasElement>();
+  private platformArt = new Map<string, HTMLCanvasElement>();
+  /** The map being drawn (taken from the simulation each frame). */
+  private map: MapDef = TOWER;
 
   camX = 0;
-  camY = WORLD_PX.h - 540;
+  camY = TOWER.world.h / SCALE - 540;
   private snapCamera = true;
   private wheel = 0;
   private wheelSpin = 0;
@@ -91,23 +94,37 @@ export class Renderer {
   private roleAlpha = new Map<number, number>();
   private cameoAlpha = 0;
   private messages: Message[] = [];
+  /** Where presses landed during a replay (world units), drawn as fading rings. */
+  private clicks: { x: number; y: number; t: number }[] = [];
   readonly particles = new Particles();
   private time = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d')!;
-    for (let i = 0; i < LEVEL.length; i++) {
-      const def = LEVEL[i];
-      if (def.kind === 'girder' && (def.mover || def.role)) this.platformArt.set(i, girderCanvas(def));
-      if (def.kind === 'goop' && (def.mover || def.onlyIn)) this.platformArt.set(i, goopCanvas(def));
-    }
   }
 
-  private staticLayer: HTMLCanvasElement | null = null;
+  /** Pre-rendered art for platforms that are drawn every frame (movers, map tricks, mode-only goop). */
+  private artFor(i: number): HTMLCanvasElement | undefined {
+    const key = `${this.map.id}:${i}`;
+    let art = this.platformArt.get(key);
+    if (!art) {
+      const def = this.map.platforms[i];
+      if (def.kind === 'girder' && (def.mover || def.role)) art = girderCanvas(def);
+      else if (def.kind === 'goop' && (def.mover || def.onlyIn)) art = goopCanvas(def);
+      if (art) this.platformArt.set(key, art);
+    }
+    return art;
+  }
+
+  private staticLayers = new Map<MapId, HTMLCanvasElement>();
   private staticFor(): HTMLCanvasElement {
-    if (!this.staticLayer) this.staticLayer = buildStaticLayer().canvas;
-    return this.staticLayer;
+    let c = this.staticLayers.get(this.map.id);
+    if (!c) {
+      c = buildStaticLayer(this.map).canvas;
+      this.staticLayers.set(this.map.id, c);
+    }
+    return c;
   }
 
   /** Size the canvas to the window. View is at least 960x540 game px (1920x1080 world). */
@@ -184,8 +201,15 @@ export class Renderer {
     this.fadeHold = 0;
     this.cameoAlpha = 0;
     this.messages = [];
+    this.clicks = [];
     this.particles.clear();
     this.roleAlpha.clear();
+  }
+
+  /** Mark a press during a replay. */
+  click(x: number, y: number): void {
+    this.clicks.push({ x, y, t: this.time });
+    if (this.clicks.length > 20) this.clicks.shift();
   }
 
   message(text: string, sub?: string, dur = 2.2, color: string = P.white): void {
@@ -195,7 +219,9 @@ export class Renderer {
 
   /** React to what happened in the simulation this tick. */
   onEvents(events: SimEvent[], sim: Sim): void {
+    this.map = sim.map;
     const g = (v: number) => v / SCALE;
+    const M = this.map.metersPer;
     for (const e of events) {
       switch (e.type) {
         case 'land':
@@ -238,7 +264,7 @@ export class Renderer {
           this.retract = { x: e.x, y: e.y, t: this.time };
           break;
         case 'fall':
-          this.message(`-${Math.round(e.distance / METERS)} M`, 'OUCH', 1.8, P.r2);
+          this.message(`-${Math.round(e.distance / M)} M`, 'OUCH', 1.8, P.r2);
           break;
         case 'cameos':
           this.particles.sparkle(150 / SCALE, 100 / SCALE, 650 / SCALE, 700 / SCALE);
@@ -254,7 +280,7 @@ export class Renderer {
   private nearestSpring(x: number, y: number): number {
     let best = -1;
     let bestD = Infinity;
-    LEVEL.forEach((p, i) => {
+    this.map.platforms.forEach((p, i) => {
       if (p.kind !== 'spring') return;
       const dx = Math.max(p.x - x, 0, x - (p.x + p.w));
       const dy = Math.max(p.y - y, 0, y - (p.y + p.h));
@@ -268,7 +294,7 @@ export class Renderer {
   }
 
   private springSide(i: number, x: number, y: number, axis: 'x' | 'y'): 'top' | 'bottom' | 'left' | 'right' {
-    const p = LEVEL[i];
+    const p = this.map.platforms[i];
     if (axis === 'x') return x <= p.x + p.w / 2 ? 'left' : 'right';
     return y <= p.y + p.h / 2 ? 'top' : 'bottom';
   }
@@ -276,7 +302,7 @@ export class Renderer {
   private nearestTarget(x: number, y: number): number {
     let best = -1;
     let bestD = Infinity;
-    LEVEL.forEach((p, i) => {
+    this.map.platforms.forEach((p, i) => {
       if (p.kind !== 'target') return;
       const d = Math.hypot(p.x + p.w / 2 - x, p.y + p.h / 2 - y);
       if (d < bestD) {
@@ -290,6 +316,11 @@ export class Renderer {
   render(f: FrameInput): void {
     this.time = f.t;
     const { sim } = f;
+    if (sim.map !== this.map) {
+      this.map = sim.map;
+      this.snapCamera = true;
+    }
+    const WPX = worldPx(this.map);
     const s = sim.state;
     const ctx = this.lctx;
     const big = Math.abs(f.prev.dx - s.dude.x) + Math.abs(f.prev.dy - s.dude.y) > 300;
@@ -302,8 +333,8 @@ export class Renderer {
     const lookAhead = Math.max(-30, Math.min(70, s.dude.vy * 2.2));
     let tx = (dudeX + DUDE.w / 2) / SCALE - this.vw / 2;
     let ty = (dudeY + DUDE.h / 2) / SCALE - this.vh * 0.56 + lookAhead;
-    tx = this.vw >= WORLD_PX.w ? (WORLD_PX.w - this.vw) / 2 : Math.max(0, Math.min(WORLD_PX.w - this.vw, tx));
-    ty = Math.max(-150, Math.min(WORLD_PX.h + 22 - this.vh, ty));
+    tx = this.vw >= WPX.w ? (WPX.w - this.vw) / 2 : Math.max(0, Math.min(WPX.w - this.vw, tx));
+    ty = Math.max(-150, Math.min(WPX.h + 22 - this.vh, ty));
     if (this.snapCamera) {
       this.camX = tx;
       this.camY = ty;
@@ -339,13 +370,23 @@ export class Renderer {
     }
 
     // ---- world
-    drawSky(ctx, v, f.t);
-    drawBackdrop(ctx, v, f.t);
-    drawGround(ctx, v);
+    drawSky(ctx, v, f.t, this.map.theme, WPX.h);
+    drawBackdrop(ctx, v, f.t, this.map.theme, WPX.h);
+    drawGround(ctx, v, WPX.h);
     this.blitStatic(ctx, v);
     this.drawDynamicPlatforms(ctx, f, cx, cy, a, view.grapplesLeft === 0);
     if (s.world.cameos) this.cameoAlpha = Math.min(1, this.cameoAlpha + f.dt * 1.2);
-    drawCameos(ctx, cx, cy, f.t, this.cameoAlpha);
+    if (this.map.cameos) drawCameos(ctx, this.map.cameos, cx, cy, f.t, this.cameoAlpha);
+    for (const b of BEACONS[this.map.id] ?? []) {
+      if (Math.floor(f.t * 1.25 + b.x * 0.001) % 2) continue;
+      const bx = Math.round(b.x / SCALE - cx);
+      const by = Math.round(b.y / SCALE - cy);
+      ctx.globalAlpha = 0.35;
+      rect(ctx, bx - 3, by - 3, 7, 7, P.r2);
+      ctx.globalAlpha = 1;
+      rect(ctx, bx - 1, by - 1, 3, 3, P.r1);
+      dot(ctx, bx, by, P.white);
+    }
 
     // rope and dude
     const hook = sim.hookView();
@@ -409,6 +450,19 @@ export class Renderer {
 
     if (f.interactive && f.pointer && !s.won) this.drawAim(ctx, f, sim, muzzle, cx, cy, pointerWorld!);
 
+    // replay: show where each press landed
+    this.clicks = this.clicks.filter(c => f.t - c.t < 0.5);
+    for (const c of this.clicks) {
+      const k = (f.t - c.t) / 0.5;
+      const r = Math.round(2 + k * 7);
+      const px = Math.round(c.x / SCALE - cx);
+      const py = Math.round(c.y / SCALE - cy);
+      ctx.globalAlpha = 1 - k;
+      ctx.strokeStyle = P.y2;
+      ctx.strokeRect(px - r + 0.5, py - r + 0.5, r * 2, r * 2);
+      ctx.globalAlpha = 1;
+    }
+
     // fade (goop reset / teleport)
     if (this.fade > 0) {
       ctx.fillStyle = `rgba(13,11,32,${Math.min(1, this.fade)})`;
@@ -444,8 +498,9 @@ export class Renderer {
 
   private drawDynamicPlatforms(ctx: Ctx, f: FrameInput, cx: number, cy: number, a: number, spent: boolean): void {
     const s = f.sim.state;
-    for (let i = 0; i < LEVEL.length; i++) {
-      const def = LEVEL[i];
+    const plats = this.map.platforms;
+    for (let i = 0; i < plats.length; i++) {
+      const def = plats[i];
       if (def.onlyIn && def.onlyIn !== s.mode) continue;
       const wx = lerp(f.prev.platX[i] ?? s.world.platX[i], s.world.platX[i], a);
       const b = toPx({ x: wx, y: def.y, w: def.w, h: def.h });
@@ -485,11 +540,11 @@ export class Renderer {
         }
         drawSpring(ctx, { x, y, w: b.w, h: b.h }, comp, hit?.side ?? 'top');
       } else if (def.kind === 'goop') {
-        const art = this.platformArt.get(i);
+        const art = this.artFor(i);
         if (art) ctx.drawImage(art, x - 1, y - 1);
         drawGoopLife(ctx, { x, y, w: b.w, h: b.h }, f.t, i);
       } else if (def.kind === 'girder' && (def.mover || def.role)) {
-        const art = this.platformArt.get(i)!;
+        const art = this.artFor(i)!;
         ctx.globalAlpha = alpha;
         ctx.drawImage(art, x, y);
         ctx.globalAlpha = 1;
@@ -583,8 +638,9 @@ export class Renderer {
       for (; dist < range; dist += 4) {
         const hx = ox + ux * dist;
         const hy = oy + uy * dist;
-        for (let i = 0; i < LEVEL.length && hit === 'none'; i++) {
-          const def = LEVEL[i];
+        const plats = this.map.platforms;
+        for (let i = 0; i < plats.length && hit === 'none'; i++) {
+          const def = plats[i];
           if (!isVisible(def, s.world) || def.kind === 'goal') continue;
           if (s.newage && def.kind === 'spring' && def.w > def.h) continue;
           const bx = s.world.platX[i];
@@ -603,7 +659,7 @@ export class Renderer {
         if (i % 2 === 0) dot(ctx, gx, gy, color);
       }
       if (hit === 'target' && hitIndex >= 0) {
-        const def = LEVEL[hitIndex];
+        const def = this.map.platforms[hitIndex];
         const bx = Math.round(s.world.platX[hitIndex] / SCALE - cx);
         const by = Math.round(def.y / SCALE - cy);
         const pulse = Math.floor(f.t * 8) % 2;
@@ -641,8 +697,9 @@ export class Renderer {
       drawTextOutlined(ctx, formatTime(s.stats.ticks), pad, y, P.white, P.ink, u * 2);
       y += 18 * u;
     }
-    const h = Math.max(0, Math.round(heightOf(s.dude.y) / METERS));
-    const best = Math.round(s.stats.bestHeight / METERS);
+    const M = this.map.metersPer;
+    const h = Math.max(0, Math.round(heightOf(this.map, s.dude.y) / M));
+    const best = Math.round(s.stats.bestHeight / M);
     drawTextOutlined(ctx, `HEIGHT ${h}M`, pad, y, P.y2, P.ink, u);
     y += 10 * u;
     drawTextOutlined(ctx, `BEST ${best}M`, pad, y, P.s4, P.ink, u);
@@ -653,15 +710,22 @@ export class Renderer {
       drawTextOutlined(ctx, `GOOPED ${s.stats.goopResets}`, pad, y, P.p4, P.ink, u);
     }
 
-    // pause button and mode tag (top right)
+    // pause button (or the replay label) and mode tag (top right)
     const b = this.pauseBox();
-    rect(ctx, b.x - u, b.y - u, b.w + 2 * u, b.h + 2 * u, P.ink);
-    rect(ctx, b.x, b.y, b.w, b.h, 'rgba(26,28,44,0.75)');
-    rect(ctx, b.x + 4 * u, b.y + 3 * u, 2 * u, 7 * u, P.white);
-    rect(ctx, b.x + 7 * u, b.y + 3 * u, 2 * u, 7 * u, P.white);
+    if (f.replay) {
+      const label = f.replay.paused ? 'REPLAY  PAUSED' : `REPLAY  ${f.replay.speed}X`;
+      drawTextOutlined(ctx, label, this.canvas.width - textWidth(label, u * 2) - 6 * u, b.y, P.y2, P.ink, u * 2);
+    } else {
+      rect(ctx, b.x - u, b.y - u, b.w + 2 * u, b.h + 2 * u, P.ink);
+      rect(ctx, b.x, b.y, b.w, b.h, 'rgba(26,28,44,0.75)');
+      rect(ctx, b.x + 4 * u, b.y + 3 * u, 2 * u, 7 * u, P.white);
+      rect(ctx, b.x + 7 * u, b.y + 3 * u, 2 * u, 7 * u, P.white);
+    }
     const tag = s.mode === 'original' ? 'ORIGINAL' : 'NEW AGE';
-    drawTextOutlined(ctx, tag, b.x - textWidth(tag, u) - 5 * u, b.y + 3 * u, s.mode === 'original' ? P.r2 : P.c2, P.ink, u);
-    if (f.debug) drawTextOutlined(ctx, `DEBUG: KEYS 1-${TELEPORTS.length} TELEPORT`, pad, this.canvas.height - 12 * u, P.y1, P.ink, u);
+    const tagY = f.replay ? b.y + 18 * u : b.y + 3 * u;
+    const tagX = f.replay ? this.canvas.width - textWidth(tag, u) - 6 * u : b.x - textWidth(tag, u) - 5 * u;
+    drawTextOutlined(ctx, tag, tagX, tagY, s.mode === 'original' ? P.r2 : P.c2, P.ink, u);
+    if (f.debug) drawTextOutlined(ctx, `DEBUG: KEYS 1-${this.map.teleports.length} TELEPORT`, pad, this.canvas.height - 12 * u, P.y1, P.ink, u);
 
     // messages
     this.messages = this.messages.filter(m => f.t - m.t0 < m.dur);
@@ -694,4 +758,3 @@ export function formatTime(ticks: number): string {
   return `${h > 0 ? h + ':' : ''}${mm}:${String(sec).padStart(2, '0')}.${tenth}`;
 }
 
-export { WORLD };

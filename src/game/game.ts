@@ -1,20 +1,30 @@
-// The game shell: fixed 60 Hz simulation, rendering, input, menus, saving.
+// The game shell: fixed 60 Hz simulation, rendering, input, menus, saving, replays.
 
 import { Audio } from '../audio/audio';
 import { Renderer, snapshot, type Snapshot } from '../render/renderer';
-import { heightOf, LEVEL } from '../sim/level';
-import { Sim } from '../sim/sim';
+import { getMap, heightOf, MAPS, type MapId } from '../sim/level';
+import { isReplay, quantize, type RecordedInput, type Replay } from '../sim/replay';
 import { randomSeed } from '../sim/rng';
+import { Sim } from '../sim/sim';
 import type { InputEvent, Mode, SimEvent } from '../sim/types';
 import { TICK_RATE } from '../sim/types';
-import { loadSave, writeSave, type SaveData, type Settings } from './save';
-import { UI } from './ui';
+import { ReplayPlayer, SPEEDS } from './replay-player';
+import { loadSave, runKey, writeSave, type Best, type RunKey, type SaveData, type Settings } from './save';
+import { modeName, UI } from './ui';
 
 const TICK = 1 / TICK_RATE;
-type Phase = 'title' | 'playing' | 'paused' | 'won';
+type Phase = 'title' | 'playing' | 'paused' | 'won' | 'replay';
+/** A run with more inputs than this stops recording (it would bloat the save). */
+const MAX_RECORDED = 200_000;
+
+// The bot's winning routes ship with the game as replays.
+const BOT_FILES = import.meta.glob('../data/routes/*.json', { eager: true, import: 'default' }) as Record<string, unknown>;
+const BOT_REPLAYS: Partial<Record<RunKey, Replay>> = {};
+for (const raw of Object.values(BOT_FILES)) if (isReplay(raw)) BOT_REPLAYS[runKey(raw.map, raw.mode)] = raw;
 
 export interface DebugOptions {
   enabled: boolean;
+  map?: MapId;
   mode?: Mode;
   at?: { x: number; y: number };
   menu?: string;
@@ -34,8 +44,13 @@ export class Game {
   private phase: Phase = 'title';
   private sim: Sim;
   private prev: Snapshot;
+  /** Every input of the current run, for its replay (null if the run started before replays existed). */
+  private recorded: RecordedInput[] | null = [];
   private attract: Sim;
   private attractPrev: Snapshot;
+  private player: ReplayPlayer | null = null;
+  private replayBack: () => void = () => this.showTitle();
+  private replayEnded = false;
   private acc = 0;
   private inputs: InputEvent[] = [];
   private pointer: { x: number; y: number } | null = null;
@@ -45,6 +60,7 @@ export class Game {
   private time = 0;
   private saveTimer = 0;
   private winTimer = -1;
+  private winInfo: { isNewBest: boolean; prevBest: Best | undefined; replay: Replay | null } = { isNewBest: false, prevBest: undefined, replay: null };
   private debug: DebugOptions;
 
   constructor(canvas: HTMLCanvasElement, uiRoot: HTMLElement, debug: DebugOptions) {
@@ -56,15 +72,17 @@ export class Game {
     this.audio.playMusic(true);
     this.sim = Sim.create('original', 1);
     this.prev = snapshot(this.sim);
-    this.attract = Sim.create('original', 12345);
+    this.attract = Sim.create('original', 12345, this.save.last?.map ?? 'tower');
     this.attractPrev = snapshot(this.attract);
     this.ui = new UI(uiRoot, {
-      play: (mode, fresh) => this.play(mode, fresh),
+      play: (map, mode, fresh) => this.play(map, mode, fresh),
       resume: () => this.resume(),
-      restart: () => this.play(this.sim.mode, true),
+      restart: () => this.play(this.sim.mapId, this.sim.mode, true),
       quitToTitle: () => this.quitToTitle(),
       settingsChanged: s => this.applySettings(s),
       toggleFullscreen: () => this.toggleFullscreen(),
+      watch: (replay, title, back) => this.watch(replay, title, back),
+      openReplays: back => this.ui.showReplays(this.save, BOT_REPLAYS, back),
       sound: k => this.audio.ui(k),
     });
     this.bindInput();
@@ -76,7 +94,7 @@ export class Game {
   start(): void {
     const d = this.debug;
     if (d.enabled && d.mode) {
-      this.play(d.mode, true);
+      this.play(d.map ?? 'tower', d.mode, true);
       if (d.at) {
         this.sim.state.dude.x = d.at.x;
         this.sim.state.dude.y = d.at.y;
@@ -85,6 +103,7 @@ export class Game {
           this.sim.state.original.hookX = d.at.x + 14;
           this.sim.state.original.hookY = d.at.y - 20;
         }
+        this.recorded = null; // a placed run can't be replayed
         this.prev = snapshot(this.sim);
         this.renderer.resetView();
       }
@@ -97,38 +116,64 @@ export class Game {
       }
     } else {
       this.showTitle();
-      if (d.enabled && d.menu === 'modes') this.ui.showModes(this.save);
+      if (d.enabled && d.menu === 'maps') this.ui.showMaps(this.save);
+      if (d.enabled && d.menu === 'modes') this.ui.showModes(this.save, d.map ?? 'tower');
+      if (d.enabled && d.menu === 'replays') this.ui.showReplays(this.save, BOT_REPLAYS, () => this.showTitle());
       if (d.enabled && d.menu === 'settings') this.ui.showSettings(this.save.settings, () => this.showTitle());
       if (d.enabled && d.menu === 'howto') this.ui.showHowTo(() => this.showTitle());
+      if (d.enabled && d.menu === 'watch') {
+        const bot = BOT_REPLAYS[runKey(d.map ?? 'tower', 'newage')];
+        if (bot) this.watch(bot, 'Bot', () => this.showTitle());
+      }
     }
     requestAnimationFrame(t => this.frame(t));
   }
 
   // ------------------------------------------------------------ flow
 
-  private showTitle(): void {
-    this.phase = 'title';
-    this.canvas.classList.remove('playing');
-    this.renderer.resetView();
-    this.ui.showTitle(this.save);
+  private hasReplays(): boolean {
+    return Object.keys(BOT_REPLAYS).length > 0 || Object.values(this.save.replays).some(r => r?.best || r?.last);
   }
 
-  private play(mode: Mode, fresh: boolean): void {
-    const saved = fresh ? null : this.save.runs[mode];
-    this.sim = saved ? new Sim(structuredClone(saved)) : Sim.create(mode, randomSeed());
+  private showTitle(): void {
+    const map = this.save.last?.map ?? 'tower';
+    if (this.attract.mapId !== map) {
+      this.attract = Sim.create('original', 12345, map);
+      this.attractPrev = snapshot(this.attract);
+    }
+    this.phase = 'title';
+    this.player = null;
+    this.ui.hideReplayBar();
+    this.canvas.classList.remove('playing');
+    this.renderer.resetView();
+    this.ui.showTitle(this.save, this.hasReplays());
+  }
+
+  private play(map: MapId, mode: Mode, fresh: boolean): void {
+    const key = runKey(map, mode);
+    const saved = fresh ? undefined : this.save.runs[key];
+    if (saved) {
+      this.sim = new Sim(structuredClone(saved.state));
+      this.recorded = saved.inputs ? saved.inputs.slice() : null;
+    } else {
+      this.sim = Sim.create(mode, randomSeed(), map);
+      this.recorded = [];
+    }
     this.prev = snapshot(this.sim);
-    this.save.lastMode = mode;
-    if (fresh) this.save.runs[mode] = null;
-    this.persist();
+    this.save.last = { map, mode };
+    if (fresh) delete this.save.runs[key];
+    this.player = null;
+    this.ui.hideReplayBar();
     this.acc = 0;
     this.inputs = [];
     this.pointerDown = false;
     this.winTimer = -1;
     this.phase = 'playing';
+    this.persist();
     this.canvas.classList.add('playing');
     this.renderer.resetView();
     this.ui.hide();
-    if (!saved) this.renderer.message(mode === 'original' ? 'ORIGINAL' : 'NEW AGE', 'GOOD LUCK', 2.4, mode === 'original' ? '#ff8a8d' : '#9ff3ff');
+    if (!saved) this.renderer.message(getMap(map).name.toUpperCase(), modeName(mode).toUpperCase(), 2.4, mode === 'original' ? '#ff8a8d' : '#9ff3ff');
   }
 
   private pause(): void {
@@ -137,7 +182,7 @@ export class Game {
     this.phase = 'paused';
     this.canvas.classList.remove('playing');
     this.persist();
-    this.ui.showPause(this.sim.mode, this.save);
+    this.ui.showPause(this.sim.mapId, this.sim.mode, this.save);
   }
 
   private resume(): void {
@@ -156,24 +201,46 @@ export class Game {
 
   private onWin(): void {
     if (this.phase === 'won') return;
-    const mode = this.sim.mode;
+    const { mapId: map, mode } = this.sim;
+    const key = runKey(map, mode);
     const stats = this.sim.state.stats;
-    const prevBest = this.save.best[mode];
+    const prevBest = this.save.best[key];
     const isNewBest = !prevBest || stats.ticks < prevBest.ticks;
-    if (isNewBest) this.save.best[mode] = { ticks: stats.ticks, falls: stats.falls, date: new Date().toISOString() };
-    this.save.wins[mode]++;
-    this.save.runs[mode] = null;
+    if (isNewBest) this.save.best[key] = { ticks: stats.ticks, falls: stats.falls, date: new Date().toISOString() };
+    this.save.wins[key] = (this.save.wins[key] ?? 0) + 1;
+    delete this.save.runs[key];
+    let replay: Replay | null = null;
+    if (this.recorded) {
+      replay = { v: 1, map, mode, seed: this.sim.state.seed, inputs: this.recorded, ticks: stats.ticks, won: true, by: 'player', date: new Date().toISOString(), stats: { ...stats } };
+      const slot = (this.save.replays[key] ??= {});
+      slot.last = replay;
+      if (isNewBest || !slot.best) slot.best = replay;
+    }
     writeSave(this.save);
     this.phase = 'won';
     this.canvas.classList.remove('playing');
     this.winTimer = 1.6;
-    this.winInfo = { isNewBest, prevBest: prevBest ?? null };
+    this.winInfo = { isNewBest, prevBest, replay };
   }
-  private winInfo: { isNewBest: boolean; prevBest: SaveData['best'][Mode] } = { isNewBest: false, prevBest: null };
+
+  private showWinScreen(): void {
+    const { mapId: map, mode } = this.sim;
+    const replay = this.winInfo.replay;
+    this.ui.showWin(
+      map,
+      mode,
+      this.sim.state.stats,
+      this.winInfo.prevBest,
+      this.winInfo.isNewBest,
+      replay ? () => this.watch(replay, `Your run · ${getMap(map).name}, ${modeName(mode)}`, () => this.showTitle()) : null,
+      () => this.play(map, mode, true),
+      () => this.showTitle(),
+    );
+  }
 
   private persist(): void {
-    if (this.phase === 'playing' || this.phase === 'paused') {
-      if (!this.sim.state.won) this.save.runs[this.sim.mode] = this.sim.state;
+    if ((this.phase === 'playing' || this.phase === 'paused') && !this.sim.state.won) {
+      this.save.runs[runKey(this.sim.mapId, this.sim.mode)] = { state: this.sim.state, inputs: this.recorded };
     }
     writeSave(this.save);
   }
@@ -194,6 +261,62 @@ export class Game {
     }
   }
 
+  // ------------------------------------------------------------ replays
+
+  private watch(replay: Replay, title: string, back: () => void): void {
+    this.player = new ReplayPlayer(replay, replay.by === 'bot' ? 2 : 4);
+    this.replayBack = back;
+    this.replayEnded = false;
+    this.phase = 'replay';
+    this.canvas.classList.remove('playing');
+    this.renderer.resetView();
+    this.ui.hide();
+    this.ui.showReplayBar(title, {
+      togglePause: () => this.toggleReplayPause(),
+      setSpeed: sp => {
+        if (this.player) this.player.speed = sp;
+      },
+      seek: f => this.seekReplay(f * (this.player?.end ?? 0)),
+      exit: () => this.exitReplay(),
+    });
+  }
+
+  private toggleReplayPause(): void {
+    const p = this.player;
+    if (!p) return;
+    if (p.done) {
+      this.restartReplay();
+      return;
+    }
+    p.paused = !p.paused;
+  }
+
+  private seekReplay(tick: number): void {
+    if (!this.player) return;
+    this.player.seek(tick);
+    this.renderer.resetView();
+    if (this.replayEnded && !this.player.done) {
+      this.replayEnded = false;
+      this.ui.hide();
+    }
+  }
+
+  private restartReplay(): void {
+    if (!this.player) return;
+    this.player.restart();
+    this.renderer.resetView();
+    this.replayEnded = false;
+    this.ui.hide();
+  }
+
+  private exitReplay(): void {
+    this.player = null;
+    this.ui.hideReplayBar();
+    this.phase = 'title';
+    this.renderer.resetView();
+    this.replayBack();
+  }
+
   // ------------------------------------------------------------ input
 
   private bindInput(): void {
@@ -209,6 +332,10 @@ export class Game {
       if (e.button !== 0 && e.pointerType === 'mouse') return;
       const p = local(e);
       this.pointer = p;
+      if (this.phase === 'replay' && !this.ui.open) {
+        this.toggleReplayPause();
+        return;
+      }
       if (this.phase !== 'playing') return;
       if (this.renderer.hitPause(p.x, p.y)) {
         this.pause();
@@ -237,6 +364,10 @@ export class Game {
     c.addEventListener('contextmenu', e => e.preventDefault());
 
     window.addEventListener('keydown', e => {
+      if (this.phase === 'replay') {
+        this.replayKey(e);
+        return;
+      }
       if (e.key === 'Escape') {
         if (this.phase === 'playing') {
           e.preventDefault();
@@ -251,8 +382,10 @@ export class Game {
         this.spaceDown = true;
         this.press(this.pointer ?? this.defaultAimPoint());
       } else if ((e.key === 'f' || e.key === 'F') && !e.repeat) this.toggleFullscreen();
-      else if (this.debug.enabled && /^[1-4]$/.test(e.key)) {
-        const ev = this.sim.teleport(Number(e.key) - 1);
+      else if (this.debug.enabled && /^[1-9]$/.test(e.key)) {
+        const index = Number(e.key) - 1;
+        const ev = this.sim.teleport(index);
+        if (ev.length) this.recorded?.push({ tick: this.sim.state.stats.ticks, kind: 'teleport', x: index, y: 0 });
         this.handleEvents(ev);
         this.prev = snapshot(this.sim);
       }
@@ -274,6 +407,21 @@ export class Game {
     window.addEventListener('pagehide', () => this.persist());
   }
 
+  private replayKey(e: KeyboardEvent): void {
+    const p = this.player;
+    if (!p || this.ui.open) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      this.exitReplay();
+    } else if (e.code === 'Space' && !e.repeat) {
+      e.preventDefault();
+      this.toggleReplayPause();
+    } else if (e.key === 'ArrowRight') this.seekReplay(p.tick + 600);
+    else if (e.key === 'ArrowLeft') this.seekReplay(p.tick - 600);
+    else if (e.key === '+' || e.key === '=' || e.key === ']') p.speed = SPEEDS[Math.min(SPEEDS.length - 1, SPEEDS.indexOf(p.speed as (typeof SPEEDS)[number]) + 1)];
+    else if (e.key === '-' || e.key === '[') p.speed = SPEEDS[Math.max(0, SPEEDS.indexOf(p.speed as (typeof SPEEDS)[number]) - 1)];
+  }
+
   /** CSS point straight above the dude, for Space when the mouse hasn't moved yet. */
   private defaultAimPoint(): { x: number; y: number } {
     const r = this.canvas.getBoundingClientRect();
@@ -282,14 +430,14 @@ export class Game {
 
   private press(p: { x: number; y: number }): void {
     const w = this.renderer.screenToWorld(p.x, p.y);
-    this.inputs.push({ kind: 'press', x: w.x, y: w.y });
+    this.inputs.push({ kind: 'press', x: quantize(w.x), y: quantize(w.y) });
     this.pointerDown = true;
   }
 
   private release(): void {
     const p = this.pointer ?? this.defaultAimPoint();
     const w = this.renderer.screenToWorld(p.x, p.y);
-    this.inputs.push({ kind: 'release', x: w.x, y: w.y });
+    this.inputs.push({ kind: 'release', x: quantize(w.x), y: quantize(w.y) });
     this.pointerDown = false;
   }
 
@@ -303,14 +451,18 @@ export class Game {
   // ------------------------------------------------------------ loop
 
   private onResize(): void {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    this.renderer.resize(w, h, window.devicePixelRatio || 1);
+    this.renderer.resize(window.innerWidth, window.innerHeight, window.devicePixelRatio || 1);
   }
 
   private tick(): void {
     this.prev = snapshot(this.sim);
-    const events = this.sim.step(this.inputs.splice(0));
+    const inputs = this.inputs.splice(0);
+    if (this.recorded) {
+      const tick = this.sim.state.stats.ticks;
+      for (const i of inputs) this.recorded.push({ tick, kind: i.kind, x: i.x, y: i.y });
+      if (this.recorded.length > MAX_RECORDED) this.recorded = null;
+    }
+    const events = this.sim.step(inputs);
     this.handleEvents(events);
   }
 
@@ -361,15 +513,31 @@ export class Game {
       alpha = this.acc / TICK;
     } else if (this.phase === 'won' && this.winTimer > 0) {
       this.winTimer -= dt;
-      if (this.winTimer <= 0) {
-        const mode = this.sim.mode;
-        this.ui.showWin(mode, this.sim.state.stats, this.winInfo.prevBest, this.winInfo.isNewBest, () => this.play(mode, true), () => this.showTitle());
+      if (this.winTimer <= 0) this.showWinScreen();
+    } else if (this.phase === 'replay' && this.player) {
+      const p = this.player;
+      const quiet = p.speed > 2;
+      p.update(dt, (events, inputs) => {
+        for (const i of inputs) if (i.kind === 'press') this.renderer.click(i.x, i.y);
+        if (events.length) {
+          this.renderer.onEvents(events, p.sim);
+          if (!quiet) this.audio.onEvents(events);
+        }
+      });
+      sim = p.sim;
+      prev = p.prev;
+      alpha = p.alpha;
+      this.ui.updateReplayBar(p.tick, p.end, p.speed, p.paused, p.done);
+      if (p.done && !this.replayEnded) {
+        this.replayEnded = true;
+        this.ui.showReplayEnd(p.sim.state.won, () => this.restartReplay(), () => this.exitReplay());
       }
     }
 
-    const height = heightOf(sim.state.dude.y);
-    this.audio.setIntensity(this.phase === 'title' ? 0.2 : height / 2600);
-    this.audio.update(sim, this.phase === 'playing');
+    const map = getMap(sim.mapId);
+    const height = heightOf(map, sim.state.dude.y);
+    this.audio.setIntensity(this.phase === 'title' ? 0.2 : height / (map.world.h * 0.7));
+    this.audio.update(sim, this.phase === 'playing' || (this.phase === 'replay' && !!this.player && this.player.speed <= 2 && !this.player.paused));
 
     const s = this.save.settings;
     this.renderer.render({
@@ -381,10 +549,11 @@ export class Game {
       pointer: this.pointer,
       aimGuide: s.aimGuide,
       showTimer: s.showTimer,
-      shake: s.shake,
-      hud: this.phase === 'playing' || this.phase === 'paused',
+      shake: s.shake && this.phase !== 'replay',
+      hud: this.phase === 'playing' || this.phase === 'paused' || this.phase === 'replay',
       interactive: this.phase === 'playing',
-      debug: this.debug.enabled,
+      debug: this.debug.enabled && this.phase !== 'replay',
+      replay: this.phase === 'replay' && this.player ? { speed: this.player.speed, paused: this.player.paused } : null,
     });
     requestAnimationFrame(t => this.frame(t));
   }
@@ -394,19 +563,30 @@ export class Game {
     return {
       state: () => this.sim.state,
       phase: () => this.phase,
-      play: (mode: Mode, fresh = true) => this.play(mode, fresh),
+      save: () => this.save,
+      play: (map: MapId, mode: Mode, fresh = true) => this.play(map, mode, fresh),
       input: (ev: InputEvent) => this.inputs.push(ev),
-      levelSize: () => LEVEL.length,
-      /** Start a run with this seed and fast-forward through recorded inputs (as the real game would play them). */
-      runRoute: (route: { mode: Mode; seed: number; inputs: (InputEvent & { tick: number })[] }) => {
-        this.play(route.mode, true);
-        this.sim = Sim.create(route.mode, route.seed);
+      maps: () => Object.keys(MAPS),
+      replayTick: () => this.player?.tick ?? -1,
+      /**
+       * Start a run with the route's seed and feed its inputs through the real input path
+       * (recording included), fast-forwarding to the end. Returns whether it won.
+       */
+      runRoute: (route: { map?: MapId; mode: Mode; seed: number; inputs: RecordedInput[] }) => {
+        this.play(route.map ?? 'tower', route.mode, true);
+        this.sim = Sim.create(route.mode, route.seed, route.map ?? 'tower');
+        this.recorded = [];
         this.prev = snapshot(this.sim);
-        const byTick = new Map<number, InputEvent[]>();
-        for (const i of route.inputs) byTick.set(i.tick, [...(byTick.get(i.tick) ?? []), { kind: i.kind, x: i.x, y: i.y }]);
+        const byTick = new Map<number, RecordedInput[]>();
+        for (const i of route.inputs) byTick.set(i.tick, [...(byTick.get(i.tick) ?? []), i]);
         const last = Math.max(0, ...route.inputs.map(i => i.tick)) + 600;
         while (!this.sim.state.won && this.sim.state.stats.ticks < last) {
-          this.inputs.push(...(byTick.get(this.sim.state.stats.ticks) ?? []));
+          for (const i of byTick.get(this.sim.state.stats.ticks) ?? []) {
+            if (i.kind === 'teleport') {
+              this.sim.teleport(i.x);
+              this.recorded?.push(i);
+            } else this.inputs.push({ kind: i.kind, x: i.x, y: i.y });
+          }
           this.tick();
         }
         return this.sim.state.won;

@@ -1,6 +1,8 @@
-import { LEVEL } from '../src/sim/level';
+import { TOWER } from '../src/sim/level';
 import { Sim } from '../src/sim/sim';
 import type { InputEvent, Mode, SimEvent } from '../src/sim/types';
+
+const LEVEL = TOWER.platforms;
 
 export function sim(mode: Mode, seed = 1): Sim {
   return Sim.create(mode, seed);

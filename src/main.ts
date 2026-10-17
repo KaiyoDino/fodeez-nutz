@@ -6,9 +6,11 @@ function parseDebug(): DebugOptions {
   const q = new URLSearchParams(window.location.search);
   if (!q.has('debug')) return { enabled: false };
   const mode = q.get('mode');
+  const map = q.get('map');
   const at = q.get('at')?.split(',').map(Number);
   return {
     enabled: true,
+    map: map === 'tower' || map === 'crane' ? map : undefined,
     mode: mode === 'original' || mode === 'newage' ? mode : undefined,
     at: at && at.length === 2 && at.every(Number.isFinite) ? { x: at[0], y: at[1] } : undefined,
     menu: q.get('menu') ?? undefined,

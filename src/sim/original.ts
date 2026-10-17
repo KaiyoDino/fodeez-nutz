@@ -17,17 +17,22 @@
 //  - Standing on top of goop now counts as stuck for the goop timer. The original stopped
 //    him dead there without starting the timer, which could softlock you on a goop block
 //    with no target in reach.
+//  - Moving platforms remember their own "just turned around" flag. The original shared one
+//    flag between all of them; on the tower both moving girders turn at the same moment, so
+//    it's identical there, and on other maps he no longer flips when an unrelated mover turns.
+//  - The hook's aim is computed by normalizing the vector instead of atan/cos/sin. It's the
+//    same math, but gives identical bits in every browser, which replays rely on.
 //
 // Kept on purpose, including the odd bits: reversed gravity while hooked, spring bounces
 // that multiply by 1.75 with no cap, riding moving girders at platform speed + 2, the goop
 // timer that sends you back to the start, and the extra tick of reversed gravity after an
 // auto-release.
 
-import { DUDE, GOOP_RESET, LEVEL } from './level';
+import { DUDE } from './level';
 import { nextRandom } from './rng';
 import type { DudeState, InputEvent, SimEvent, Surface } from './types';
 import { GOOP_TICKS, MAX_GRAPPLES } from './types';
-import { dudeOverlaps, isVisible, overlaps, platformBox, type WorldState } from './world';
+import { dudeOverlaps, isVisible, len, mapOf, overlaps, platformBox, platformsOf, type WorldState } from './world';
 
 export interface OriginalState {
   gravity: number;
@@ -45,8 +50,10 @@ export interface OriginalState {
   collidedFloor: boolean;
   onMoving: boolean;
   onSticky: boolean;
-  reversed: boolean;
-  reversedSticky: boolean;
+  /** Per platform: did this mover turn around last tick? (The original kept one flag shared by all movers.) */
+  reversed: boolean[];
+  /** The moving goop he's stuck to, or -1. */
+  stuckMover: number;
   dying: number;
   grapples: number;
   /** Not in the original: which side of the goop he's stuck to, for drawing. */
@@ -64,7 +71,7 @@ const MAX_STEP = 48;
 /** Not a gameplay cap: just keeps a runaway number from ever freezing the game. */
 const SANITY_SPEED = 2000;
 
-export function newOriginalState(dude: DudeState): OriginalState {
+export function newOriginalState(dude: DudeState, platformCount: number): OriginalState {
   return {
     gravity: 1,
     wantsHook: false,
@@ -80,8 +87,8 @@ export function newOriginalState(dude: DudeState): OriginalState {
     collidedFloor: false,
     onMoving: false,
     onSticky: false,
-    reversed: false,
-    reversedSticky: false,
+    reversed: new Array(platformCount).fill(false),
+    stuckMover: -1,
     dying: 0,
     grapples: 0,
     stuckSide: null,
@@ -91,7 +98,7 @@ export function newOriginalState(dude: DudeState): OriginalState {
 
 /** The original's platform type numbers: 0 no collision, 1 normal, 2 bouncy, 3 sticky, 4-6 moving versions, 7 finish. */
 export function originalType(i: number, world: WorldState): number {
-  const p = LEVEL[i];
+  const p = platformsOf(world)[i];
   if (!isVisible(p, world)) return 0;
   switch (p.kind) {
     case 'target':
@@ -163,7 +170,8 @@ function dropHook(o: OriginalState): void {
 function verticalPass(c: Ctx): boolean {
   const { d, o, world } = c;
   let responded = false;
-  for (let i = 0; i < LEVEL.length; i++) {
+  const count = platformsOf(world).length;
+  for (let i = 0; i < count; i++) {
     const type = originalType(i, world);
     if (type === 0) continue;
     const p = platformBox(world, i);
@@ -212,7 +220,7 @@ function verticalPass(c: Ctx): boolean {
             const pdx = world.platDx[i];
             d.vx = pdx < 0 ? pdx - 2 : pdx + 2;
           }
-          if (o.reversed) d.vx = -d.vx;
+          if (o.reversed[i]) d.vx = -d.vx;
           o.onMoving = true;
           responded = true;
           if (incoming >= 3) c.events.push({ type: 'land', speed: incoming, x: d.x + DUDE.w / 2, y: p.y, surface: surfaceOf(type) });
@@ -223,6 +231,7 @@ function verticalPass(c: Ctx): boolean {
           if (!o.onSticky) c.events.push({ type: 'goopStick', x: d.x + DUDE.w / 2, y: p.y, side: 'top' });
           o.onSticky = true;
           o.stuckSide = 'top';
+          o.stuckMover = i;
           o.grapples = 0;
           o.collidedFloor = true;
           d.y = p.y - DUDE.h;
@@ -270,6 +279,7 @@ function verticalPass(c: Ctx): boolean {
           if (!o.onSticky) c.events.push({ type: 'goopStick', x: d.x + DUDE.w / 2, y: p.y + p.h, side: 'bottom' });
           o.onSticky = true;
           o.stuckSide = 'bottom';
+          o.stuckMover = i;
           d.y = p.y + p.h;
           d.vx = world.platDx[i];
           d.vy = 0;
@@ -283,7 +293,7 @@ function verticalPass(c: Ctx): boolean {
 }
 
 function reverseDirection(world: WorldState, i: number): boolean {
-  const p = LEVEL[i];
+  const p = platformsOf(world)[i];
   const x = world.platX[i];
   if (x > p.x + p.mover!.range || x < p.x) {
     world.platDx[i] *= -1;
@@ -311,17 +321,17 @@ function pushOut(d: DudeState, p: { x: number; w: number }, platformDx: number):
 function horizontalPass(c: Ctx, movePlatforms: boolean): boolean {
   const { d, o, world } = c;
   let responded = false;
-  for (let i = 0; i < LEVEL.length; i++) {
-    let type = originalType(i, world);
+  const count = platformsOf(world).length;
+  for (let i = 0; i < count; i++) {
+    const type = originalType(i, world);
     if (movePlatforms && (type === 4 || type === 5 || type === 6)) {
-      if (type === 6) o.reversedSticky = reverseDirection(world, i);
-      else o.reversed = reverseDirection(world, i);
-      if (o.reversedSticky && o.onMoving && o.onSticky) {
+      o.reversed[i] = reverseDirection(world, i);
+      // stuck to moving goop: turn around with it
+      if (type === 6 && o.reversed[i] && o.onMoving && o.onSticky && o.stuckMover === i) {
         d.vx = -d.vx;
         d.x = d.x + d.vx + d.vx;
       }
       world.platX[i] += world.platDx[i];
-      type = originalType(i, world);
     }
     if (type === 0) continue;
     const p = platformBox(world, i);
@@ -365,6 +375,7 @@ function horizontalPass(c: Ctx, movePlatforms: boolean): boolean {
         o.onSticky = true;
         pushOut(d, p, pdx);
         o.stuckSide = d.x >= p.x + p.w ? 'right' : 'left';
+        o.stuckMover = i;
         d.vx = pdx;
         d.vy = 0;
         o.onMoving = true;
@@ -384,8 +395,9 @@ function hookOverlaps(o: OriginalState, b: { x: number; y: number; w: number; h:
 /** The original's hook collision loop, run after each axis of hook movement. */
 function hookPass(c: Ctx): void {
   const { o, world } = c;
-  for (let i = 0; i < LEVEL.length; i++) {
-    const def = LEVEL[i];
+  const L = platformsOf(world);
+  for (let i = 0; i < L.length; i++) {
+    const def = L[i];
     // Fix: invisible platforms and the goal never touch the hook (the original special-cased indices 31 and 50).
     if (!isVisible(def, world) || def.kind === 'goal') continue;
     if (!hookOverlaps(o, platformBox(world, i))) continue;
@@ -403,13 +415,17 @@ function hookPass(c: Ctx): void {
   }
 }
 
+/**
+ * The original computed angle = atan(dy/dx) and then +-30*cos/sin(angle) depending on which
+ * side the click was. That's exactly a 30 px/tick vector toward the click, which is what this
+ * computes (with a square root, so every browser gets the same bits).
+ */
 function trackMouse(o: OriginalState): void {
   const clickDistanceX = o.mouseX - o.hookX;
   const clickDistanceY = o.mouseY - o.hookY;
-  const angle = Math.atan(clickDistanceY / clickDistanceX);
-  const sign = o.mouseX < o.hookX ? -1 : 1;
-  o.hookDx = sign * HOOK_SPEED * Math.cos(angle);
-  o.hookDy = sign * HOOK_SPEED * Math.sin(angle);
+  const l = len(clickDistanceX, clickDistanceY) || 1;
+  o.hookDx = (HOOK_SPEED * clickDistanceX) / l;
+  o.hookDy = (HOOK_SPEED * clickDistanceY) / l;
 }
 
 /** Integer sub-steps that add up to `total`, none longer than MAX_STEP. */
@@ -438,9 +454,11 @@ export function stepOriginal(d: DudeState, o: OriginalState, world: WorldState, 
   else o.dying = 0;
   if (o.dying === GOOP_TICKS) {
     events.push({ type: 'goopReset', x: d.x, y: d.y });
-    d.x = GOOP_RESET.x;
-    d.y = GOOP_RESET.y;
+    const reset = mapOf(world).goopReset;
+    d.x = reset.x;
+    d.y = reset.y;
     o.onSticky = false;
+    o.stuckMover = -1;
     o.onGoopTop = false;
     o.stuckSide = null;
     o.dying = 0;
@@ -471,7 +489,10 @@ export function stepOriginal(d: DudeState, o: OriginalState, world: WorldState, 
     if (responded) break;
   }
   if (!c.collided && !o.onSticky) o.onMoving = false;
-  if (!o.onSticky) o.stuckSide = null;
+  if (!o.onSticky) {
+    o.stuckSide = null;
+    o.stuckMover = -1;
+  }
 
   // hook
   if (o.wantsHook) {
@@ -484,7 +505,7 @@ export function stepOriginal(d: DudeState, o: OriginalState, world: WorldState, 
     hookPass(c);
     o.hookY = ti(o.hookY + o.hookDy);
     hookPass(c);
-    if (o.wantsHook && !o.attached && Math.hypot(o.hookX - d.x, o.hookY - d.y) > HOOK_RANGE) {
+    if (o.wantsHook && !o.attached && len(o.hookX - d.x, o.hookY - d.y) > HOOK_RANGE) {
       o.wantsHook = false;
       o.goHook = true;
       o.trackMouse = true;
@@ -500,6 +521,7 @@ export function stepOriginal(d: DudeState, o: OriginalState, world: WorldState, 
   if (o.wantsHook && o.attached) {
     o.onSticky = false;
     o.stuckSide = null;
+    o.stuckMover = -1;
     if (o.goHook) {
       d.vy = -2;
       d.y = d.y - 10;

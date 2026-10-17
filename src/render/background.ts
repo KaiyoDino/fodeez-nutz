@@ -1,34 +1,79 @@
-// The sky behind the tower: sunset at the bottom, night at the top, with a city
-// skyline, cranes and clouds on parallax layers.
+// The sky behind a map, with a city skyline, cranes or the tower, and clouds on parallax
+// layers. Two themes: the tower climbs from sunset into night; the crane climbs from the
+// end of the night into dawn.
 
-import { WORLD_PX } from './level-art';
 import { BAYER4, P, rgb } from './palette';
 import { ctx2d, dot, ellipse, line, makeCanvas, rect, type Ctx } from './px';
 
-// The camera's y range (-150 at the top to about 1490 at the bottom) maps onto sky rows
-// 0..~660, so the bottom of the tower sits in the sunset and the top in the night.
-const SKY_FACTOR = 0.41;
+export type SkyTheme = 'sunset' | 'dawn';
+
+// The camera's whole y range (from SKY_TOP down to the bottom of the map) maps onto sky
+// rows 0..SKY_SPAN, so every map shows the full gradient from top to bottom.
 const SKY_TOP = -150;
+const SKY_SPAN = 660;
 const TEX_W = 64;
 const TEX_H = 2400;
 
-const STOPS: [number, string][] = [
-  [0, '#0d0b20'],
-  [300, '#141130'],
-  [520, '#1b1838'],
-  [640, '#2a2152'],
-  [760, '#43306c'],
-  [880, '#6b3a78'],
-  [980, '#a24f7c'],
-  [1060, '#d9677a'],
-  [1130, '#f28a68'],
-  [1250, '#f7a96f'],
-  [TEX_H, '#f7a96f'],
-];
+interface ThemeDef {
+  stops: [number, string][];
+  /** Sky rows where stars show. */
+  stars: [number, number];
+  moonRow: number;
+  sunRow: number;
+  /** Behind the play area: background cranes (tower) or the tower you already climbed (crane). */
+  backdrop: 'cranes' | 'tower';
+  /** Whether clouds at this altitude (game px above the bottom) use the night colour. */
+  nightClouds: (alt: number) => boolean;
+}
 
-let skyTex: HTMLCanvasElement | null = null;
-function skyTexture(): HTMLCanvasElement {
-  if (skyTex) return skyTex;
+const THEMES: Record<SkyTheme, ThemeDef> = {
+  sunset: {
+    stops: [
+      [0, '#0d0b20'],
+      [300, '#141130'],
+      [520, '#1b1838'],
+      [640, '#2a2152'],
+      [760, '#43306c'],
+      [880, '#6b3a78'],
+      [980, '#a24f7c'],
+      [1060, '#d9677a'],
+      [1130, '#f28a68'],
+      [1250, '#f7a96f'],
+      [TEX_H, '#f7a96f'],
+    ],
+    stars: [0, 640],
+    moonRow: 210,
+    sunRow: 1185,
+    backdrop: 'cranes',
+    nightClouds: alt => alt > 1200,
+  },
+  dawn: {
+    stops: [
+      [0, '#ffe2a6'],
+      [150, '#ffc98a'],
+      [300, '#f7a96f'],
+      [420, '#ec8a78'],
+      [540, '#c86c88'],
+      [660, '#8a5390'],
+      [780, '#4e3a7a'],
+      [900, '#2a2152'],
+      [1020, '#1b1838'],
+      [1160, '#141130'],
+      [TEX_H, '#0d0b20'],
+    ],
+    stars: [820, 1500],
+    moonRow: 1060,
+    sunRow: 120,
+    backdrop: 'tower',
+    nightClouds: alt => alt < 900,
+  },
+};
+
+const skyTex = new Map<SkyTheme, HTMLCanvasElement>();
+function skyTexture(theme: SkyTheme): HTMLCanvasElement {
+  const cached = skyTex.get(theme);
+  if (cached) return cached;
+  const STOPS = THEMES[theme].stops;
   const c = makeCanvas(TEX_W, TEX_H);
   const ctx = ctx2d(c);
   const img = ctx.createImageData(TEX_W, TEX_H);
@@ -48,7 +93,7 @@ function skyTexture(): HTMLCanvasElement {
     }
   }
   ctx.putImageData(img, 0, 0);
-  skyTex = c;
+  skyTex.set(theme, c);
   return c;
 }
 
@@ -58,7 +103,7 @@ function hash(n: number): number {
   return x - Math.floor(x);
 }
 
-const STARS = Array.from({ length: 260 }, (_, i) => ({ x: hash(i) * 2400, y: Math.pow(hash(i + 999), 1.6) * 820, big: hash(i + 77) > 0.93, tw: hash(i + 5) * 6.28 }));
+const STARS = Array.from({ length: 300 }, (_, i) => ({ x: hash(i) * 2400, u: hash(i + 999), big: hash(i + 77) > 0.93, tw: hash(i + 5) * 6.28 }));
 
 let cityFar: HTMLCanvasElement | null = null;
 let cityNear: HTMLCanvasElement | null = null;
@@ -127,23 +172,25 @@ export interface View {
   h: number;
 }
 
-/** Camera y at the very bottom of the world; parallax layers are anchored there. */
-const bottomCam = (v: View) => WORLD_PX.h + 100 - v.h;
+/** Camera y at the very bottom of the map; parallax layers are anchored there. */
+const bottomCam = (v: View, worldH: number) => worldH + 22 - v.h;
 
-export function drawSky(ctx: Ctx, v: View, t: number): void {
-  const tex = skyTexture();
-  const srcY = Math.max(0, Math.min(TEX_H - v.h, Math.round((v.y - SKY_TOP) * SKY_FACTOR)));
+export function drawSky(ctx: Ctx, v: View, t: number, theme: SkyTheme, worldH: number): void {
+  const th = THEMES[theme];
+  const tex = skyTexture(theme);
+  const range = Math.max(1, bottomCam(v, worldH) - SKY_TOP);
+  const srcY = Math.max(0, Math.min(TEX_H - v.h, Math.round(((v.y - SKY_TOP) / range) * SKY_SPAN)));
   for (let x = 0; x < v.w; x += TEX_W) ctx.drawImage(tex, 0, srcY, TEX_W, v.h, x, 0, TEX_W, v.h);
 
-  // stars live in sky-texture space
+  // stars live in sky-texture space, denser toward the dark end of the band
   const shiftX = -v.x * 0.05;
+  const [s0, s1] = th.stars;
   for (const s of STARS) {
-    const sy = s.y - srcY;
+    const y = theme === 'sunset' ? s0 + Math.pow(s.u, 1.6) * (s1 - s0) : s1 - Math.pow(s.u, 1.6) * (s1 - s0);
+    const sy = y - srcY;
     if (sy < 0 || sy >= v.h) continue;
     const sx = ((((s.x + shiftX) % 2400) + 2400) % 2400) - 200;
     if (sx < 0 || sx >= v.w) continue;
-    const fade = s.y > 640 ? 0 : 1;
-    if (!fade) continue;
     const tw = Math.sin(t * 1.7 + s.tw);
     dot(ctx, sx, sy, tw > -0.3 ? P.star : P.starDim);
     if (s.big && tw > 0.6) {
@@ -153,17 +200,18 @@ export function drawSky(ctx: Ctx, v: View, t: number): void {
       dot(ctx, sx, sy + 1, P.starDim);
     }
   }
-  // the occasional shooting star near the top
+  // the occasional shooting star in the darkest part of the sky
   const cycle = t % 9;
-  if (cycle < 0.7 && srcY < 300) {
+  const darkRow = theme === 'sunset' ? 60 : 1100;
+  if (cycle < 0.7 && darkRow - srcY > -40 && darkRow - srcY < v.h) {
     const k = cycle / 0.7;
     const sx = v.w * (0.2 + 0.5 * ((Math.floor(t / 9) * 0.37) % 1)) + k * 120;
-    const sy = 60 - srcY + k * 50;
+    const sy = darkRow - srcY + k * 50;
     for (let i = 0; i < 10; i++) dot(ctx, sx - i * 2.4, sy - i, i < 2 ? P.star : P.starDim);
   }
 
   // moon
-  const my = 210 - srcY;
+  const my = th.moonRow - srcY;
   if (my > -30 && my < v.h + 30) {
     const mx = Math.round(v.w * 0.78);
     ellipse(ctx, mx, my, 14, 14, P.moon);
@@ -172,22 +220,49 @@ export function drawSky(ctx: Ctx, v: View, t: number): void {
     ellipse(ctx, mx + 2, my + 7, 1.5, 1.5, P.moonShade);
   }
 
-  // sun sinking behind the city
-  const sunY = 1185 - srcY;
-  if (sunY > -40 && sunY < v.h + 40) {
-    const sx = Math.round(v.w * 0.7);
-    for (let y = -26; y <= 26; y++)
-      for (let x = -26; x <= 26; x++) {
-        const d = Math.hypot(x, y);
-        if (d < 14) dot(ctx, sx + x, sunY + y, P.sun0);
-        else if (d < 21 && (d - 14) * 2.3 < BAYER4[(sunY + y) & 3][(sx + x) & 3]) dot(ctx, sx + x, sunY + y, P.sun1);
+  // the sun: sinking behind the city (sunset) or rising over the top (dawn)
+  const sunY = th.sunRow - srcY;
+  const r = theme === 'dawn' ? 20 : 14;
+  if (sunY > -r * 2 && sunY < v.h + r * 2) {
+    const sx = Math.round(v.w * (theme === 'dawn' ? 0.3 : 0.7));
+    const glow = r * 1.5;
+    for (let y = -Math.ceil(glow); y <= glow; y++)
+      for (let x = -Math.ceil(glow); x <= glow; x++) {
+        const d = Math.sqrt(x * x + y * y);
+        if (d < r) dot(ctx, sx + x, sunY + y, P.sun0);
+        else if (d < glow && (d - r) * (16 / (glow - r)) < BAYER4[(sunY + y) & 3][(sx + x) & 3]) dot(ctx, sx + x, sunY + y, P.sun1);
       }
   }
 }
 
-/** Parallax layers in front of the sky but behind the tower. */
-export function drawBackdrop(ctx: Ctx, v: View, t: number): void {
-  const bc = bottomCam(v);
+let towerArt: HTMLCanvasElement | null = null;
+/** The building from map 1, seen from the crane: dark frame, a few lit floors, a finish flag on top. */
+function towerSilhouette(): HTMLCanvasElement {
+  if (towerArt) return towerArt;
+  const w = 170;
+  const h = 560;
+  const c = makeCanvas(w, h);
+  const ctx = ctx2d(c);
+  const col = '#2b2350';
+  rect(ctx, 0, 40, w, h - 40, col);
+  for (let y = 60; y < h; y += 24) rect(ctx, 0, y, w, 2, '#231c44');
+  for (const x of [0, 42, 84, 126, w - 4]) rect(ctx, x, 40, 4, h - 40, '#231c44');
+  for (let y = 70; y < h - 10; y += 24)
+    for (let x = 8; x < w - 8; x += 10) if (hash(x * 3.1 + y * 0.7) > 0.8) rect(ctx, x, y, 4, 6, P.cityWin);
+  // unfinished top: an open frame and a checkered flag
+  rect(ctx, 20, 10, 4, 30, col);
+  rect(ctx, w - 24, 10, 4, 30, col);
+  rect(ctx, 20, 10, w - 40, 3, col);
+  rect(ctx, w / 2, 0, 2, 12, col);
+  for (let i = 0; i < 4; i++) for (let j = 0; j < 2; j++) rect(ctx, w / 2 + 2 + i * 3, j * 3, 3, 3, (i + j) % 2 ? '#15161f' : '#e8e8e2');
+  towerArt = c;
+  return c;
+}
+
+/** Parallax layers in front of the sky but behind the play area. */
+export function drawBackdrop(ctx: Ctx, v: View, t: number, theme: SkyTheme, worldH: number): void {
+  const th = THEMES[theme];
+  const bc = bottomCam(v, worldH);
   const rise = bc - v.y; // how far above the bottom the camera is, game px
 
   // clouds at a few altitudes
@@ -198,7 +273,7 @@ export function drawBackdrop(ctx: Ctx, v: View, t: number): void {
     const speed = 3 + hash(i) * 5;
     const span = v.w + 160;
     const sx = Math.round(((((hash(i + 40) * span + t * speed) % span) + span) % span) - 80 - v.x * 0.2);
-    const night = alt > 1200;
+    const night = th.nightClouds(alt);
     ctx.globalAlpha = night ? 0.5 : 0.28;
     const col = night ? P.cloudNight : P.cloud;
     const len = 24 + Math.floor(hash(i + 9) * 30);
@@ -208,11 +283,19 @@ export function drawBackdrop(ctx: Ctx, v: View, t: number): void {
     ctx.globalAlpha = 1;
   }
 
+  const hx = (x: number, f: number) => Math.round(x - v.x * f);
+  if (th.backdrop === 'tower') {
+    // the tower you already climbed, sinking slowly as you go up the crane
+    const art = towerSilhouette();
+    const top = Math.round(v.h + 60 + rise * 0.45 - art.height);
+    if (top < v.h) ctx.drawImage(art, hx(v.w * 0.06, 0.25), top);
+  }
+
   // cranes, slowly sinking as you climb
   const cr = crane();
   const craneBase = v.h + 40 + rise * 0.6;
-  const hx = (x: number, f: number) => Math.round(x - v.x * f);
-  for (const [x, flip] of [[v.w * 0.08, false], [v.w * 0.82, true]] as const) {
+  const cranes: [number, boolean][] = th.backdrop === 'cranes' ? [[v.w * 0.08, false], [v.w * 0.82, true]] : [[v.w * 0.8, true]];
+  for (const [x, flip] of cranes) {
     const top = Math.round(craneBase - cr.height);
     if (top > v.h) continue;
     ctx.save();
@@ -238,9 +321,9 @@ export function drawBackdrop(ctx: Ctx, v: View, t: number): void {
   if (nearY < v.h) for (let x = -((Math.round(v.x * 0.3) % near.width) + near.width) % near.width - near.width; x < v.w; x += near.width) ctx.drawImage(near, x, nearY);
 }
 
-/** Concrete footing and dirt under the tower, for when the camera looks below the floor. */
-export function drawGround(ctx: Ctx, v: View): void {
-  const gy = WORLD_PX.h - v.y;
+/** Concrete footing and dirt under the map, for when the camera looks below the floor. */
+export function drawGround(ctx: Ctx, v: View, worldH: number): void {
+  const gy = worldH - v.y;
   if (gy >= v.h) return;
   rect(ctx, 0, gy, v.w, v.h - gy, P.dirt0);
   rect(ctx, 0, gy, v.w, 8, P.concrete0);

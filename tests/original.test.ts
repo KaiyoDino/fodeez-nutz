@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { GOOP_RESET, LEVEL, START } from '../src/sim/level';
+import { TOWER } from '../src/sim/level';
 import { Sim } from '../src/sim/sim';
 import { indexWhere, place, press, release, run, sim, targetCenter } from './helpers';
+
+const GOOP_RESET = TOWER.goopReset;
+const LEVEL = TOWER.platforms;
+const START = TOWER.start;
 
 const firstTarget = indexWhere(p => p.kind === 'target' && p.x === 850 && p.y === 3450);
 
