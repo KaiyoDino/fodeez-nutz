@@ -206,7 +206,7 @@ export class UI {
         toggle('set-timer', 'Show timer', 'showTimer'),
         toggle('set-shake', 'Screen shake', 'shake'),
       ]),
-      el('div', { className: 'row' }, [this.button('Fullscreen', () => this.h.toggleFullscreen(), { kind: 'quiet' }), this.button('Done', back, { kind: 'primary', sound: 'back' })]),
+      el('div', { className: 'row' }, [this.button('Fullscreen', () => this.h.toggleFullscreen(), { kind: 'quiet' }), this.button('Done', back, { kind: 'primary', sound: 'back', autofocus: true })]),
     ]);
     this.mount(panel, { escape: back });
   }

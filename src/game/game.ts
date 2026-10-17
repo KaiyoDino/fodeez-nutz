@@ -185,9 +185,10 @@ export class Game {
   }
 
   private toggleFullscreen(): void {
+    // Fullscreen can be refused (embedded pages, some phones); that's fine, the game works without it.
     try {
-      if (document.fullscreenElement) void document.exitFullscreen();
-      else void document.documentElement.requestFullscreen?.();
+      const p = document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.();
+      p?.catch(() => undefined);
     } catch {
       // not available here
     }

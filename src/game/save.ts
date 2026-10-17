@@ -28,7 +28,15 @@ export interface SaveData {
   lastMode: Mode | null;
 }
 
-export const DEFAULT_SETTINGS: Settings = { music: 0.6, sfx: 0.8, shake: true, aimGuide: true, showTimer: true };
+const prefersReducedMotion = (): boolean => {
+  try {
+    return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  } catch {
+    return false;
+  }
+};
+
+export const DEFAULT_SETTINGS: Settings = { music: 0.6, sfx: 0.8, shake: !prefersReducedMotion(), aimGuide: true, showTimer: true };
 
 function empty(): SaveData {
   return {

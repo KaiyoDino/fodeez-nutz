@@ -94,10 +94,21 @@ export function drawText(ctx: Ctx, text: string, x: number, y: number, color: st
   }
 }
 
-/** Text with a 1-pixel dark outline, for HUD text over busy backgrounds. */
+const outlinedCache = new Map<string, HTMLCanvasElement>();
+
+/** Text with a 1-pixel dark outline, for HUD text over busy backgrounds. Rendered once per string and cached. */
 export function drawTextOutlined(ctx: Ctx, text: string, x: number, y: number, color: string, outlineColor: string, scale = 1): void {
-  for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [1, -1], [-1, 1], [1, 1]]) drawText(ctx, text, x + dx * scale, y + dy * scale, outlineColor, scale);
-  drawText(ctx, text, x, y, color, scale);
+  const key = `${text}|${color}|${outlineColor}|${scale}`;
+  let c = outlinedCache.get(key);
+  if (!c) {
+    if (outlinedCache.size > 300) outlinedCache.clear();
+    c = makeCanvas(textWidth(text, scale) + scale * 2, GLYPH_H * scale + scale * 2);
+    const cc = c.getContext('2d')!;
+    for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [1, -1], [-1, 1], [1, 1]]) drawText(cc, text, scale + dx * scale, scale + dy * scale, outlineColor, scale);
+    drawText(cc, text, scale, scale, color, scale);
+    outlinedCache.set(key, c);
+  }
+  ctx.drawImage(c, Math.round(x) - scale, Math.round(y) - scale);
 }
 
 /**

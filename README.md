@@ -13,6 +13,8 @@ npm run dev        # http://localhost:5173
 
 `npm run build` writes a static site to `dist/` that can be hosted anywhere (GitHub Pages, itch.io, any web server). All paths are relative.
 
+`npm run build:single` also writes `dist/fodeez-nutz.html`: the whole game in one 120 KB file that plays when you open it, with no server needed.
+
 **Controls**
 
 | | |
@@ -83,7 +85,7 @@ npm run typecheck
 - `pointer=x,y` fakes the cursor position.
 - `menu=pause|win|modes|settings|howto` opens a screen.
 
-`npx playwright test --config tools/screens.config.ts` saves phone and tablet screenshots to `screenshots/`.
+`npx playwright test --config tools/screens.config.ts` saves screenshots (phone, tablet, rope, goop) to `screenshots/`, prints a frame-time measurement (`--grep perf`), and checks the single-file build (`--grep single`).
 
 ## Project layout
 

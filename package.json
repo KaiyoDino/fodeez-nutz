@@ -12,7 +12,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "route": "vitest run tests/route.test.ts"
+    "route": "vitest run tests/route.test.ts",
+    "build:single": "npm run build && node tools/single-file.mjs"
   },
   "devDependencies": {
     "@fontsource/tiny5": "^5.3.0",
