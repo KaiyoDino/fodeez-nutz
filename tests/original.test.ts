@@ -176,13 +176,14 @@ describe('Original: surfaces', () => {
     expect(s.state.stats.goopResets).toBe(1);
   });
 
-  it('standing on top of goop stops him dead without starting the timer', () => {
+  it('standing on top of goop stops him dead, and counts as stuck for the goop timer', () => {
     const goop = indexWhere(p => p.kind === 'goop' && p.x === 700);
     const s = place(sim('original'), 702, 2850 - 50 - 5, 3, 4);
-    run(s, 300);
+    run(s, 100);
     expect(s.state.dude.vx).toBe(0);
     expect(s.state.dude.y).toBe(LEVEL[goop].y - 50);
-    expect(s.state.stats.goopResets).toBe(0);
+    run(s, 100);
+    expect(s.state.stats.goopResets).toBe(1);
   });
 
   it('rides moving girders at platform speed + 2', () => {
@@ -226,5 +227,21 @@ describe('Original: surfaces', () => {
     const ev = run(s, 200);
     expect(ev.some(e => e.type === 'fall')).toBe(true);
     expect(s.state.stats.falls).toBe(1);
+  });
+});
+
+describe('saves', () => {
+  it('round-trips through JSON and refuses saves from a different map', async () => {
+    const { loadSimState } = await import('../src/sim/sim');
+    const s = sim('newage', 3);
+    run(s, 50);
+    const copy = loadSimState(JSON.parse(JSON.stringify(s.state)));
+    expect(copy).not.toBeNull();
+    expect(copy!.dude).toEqual(s.state.dude);
+    const old = JSON.parse(JSON.stringify(s.state));
+    old.world.platX.pop();
+    expect(loadSimState(old)).toBeNull();
+    expect(loadSimState({ v: 99 })).toBeNull();
+    expect(loadSimState(null)).toBeNull();
   });
 });

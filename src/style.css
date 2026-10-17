@@ -15,7 +15,7 @@
   --cyan: #2ec4d6;
   --cyan-light: #9ff3ff;
   --goop: #a774f0;
-  --font: 'Pixelify Sans', 'Courier New', monospace;
+  --font: 'Tiny5', 'Courier New', monospace;
   color-scheme: dark;
 }
 
@@ -31,6 +31,7 @@ body {
   background: var(--night);
   color: var(--text);
   font-family: var(--font);
+  font-synthesis: none;
   -webkit-font-smoothing: none;
   -webkit-tap-highlight-color: transparent;
 }
@@ -60,6 +61,7 @@ body {
   position: absolute;
   inset: 0;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   overflow-y: auto;
   padding: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) max(16px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
@@ -71,7 +73,8 @@ body {
 }
 
 .panel {
-  width: min(460px, 100%);
+  width: min(460px, calc(100% - 28px));
+  max-width: calc(100% - 28px);
   padding: 26px 26px 24px;
   background: var(--panel);
   box-shadow:
@@ -86,14 +89,14 @@ body {
 }
 
 .panel.wide {
-  width: min(780px, 100%);
+  width: min(780px, calc(100% - 28px));
 }
 
 .panel.title {
   background: rgba(27, 24, 56, 0.86);
   align-items: center;
   text-align: center;
-  width: min(480px, 100%);
+  width: min(480px, calc(100% - 28px));
 }
 
 /* On wide screens the title sits to the left so the rolling dude stays in view. */
@@ -107,26 +110,26 @@ body {
 h1,
 h2 {
   margin: 0;
-  font-weight: 700;
+  font-weight: 400;
   letter-spacing: 0.02em;
   line-height: 1.1;
   text-wrap: balance;
 }
 
 h1 {
-  font-size: 30px;
+  font-size: 34px;
   color: var(--yellow);
   text-shadow: 3px 3px 0 var(--ink);
 }
 
 h2 {
-  font-size: 22px;
+  font-size: 26px;
 }
 
 p {
   margin: 0;
   line-height: 1.45;
-  font-size: 17px;
+  font-size: 18px;
 }
 
 .muted {
@@ -146,6 +149,18 @@ p {
   font-size: 18px;
 }
 
+.rotate-hint {
+  display: none;
+  color: var(--muted);
+  font-size: 16px;
+}
+
+@media (orientation: portrait) and (pointer: coarse) {
+  .rotate-hint {
+    display: block;
+  }
+}
+
 .stack {
   display: flex;
   flex-direction: column;
@@ -162,8 +177,8 @@ p {
 
 .btn {
   font: inherit;
-  font-size: 19px;
-  font-weight: 700;
+  font-size: 21px;
+  font-weight: 400;
   color: var(--text);
   background: var(--steel);
   border: 0;
@@ -255,7 +270,7 @@ p {
 }
 
 .card p {
-  font-size: 16px;
+  font-size: 17px;
 }
 
 .card .best {
@@ -324,7 +339,7 @@ input:focus-visible {
 .panel.win {
   align-items: center;
   text-align: center;
-  background: rgba(27, 24, 56, 0.9);
+  background: rgba(27, 24, 56, 0.96);
 }
 
 .yippee {
@@ -340,7 +355,6 @@ input:focus-visible {
   background: var(--yellow);
   color: var(--ink);
   padding: 4px 12px;
-  font-weight: 700;
   box-shadow: 0 0 0 3px var(--ink);
 }
 

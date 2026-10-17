@@ -155,6 +155,7 @@ export class Game {
   }
 
   private onWin(): void {
+    if (this.phase === 'won') return;
     const mode = this.sim.mode;
     const stats = this.sim.state.stats;
     const prevBest = this.save.best[mode];
@@ -395,6 +396,20 @@ export class Game {
       play: (mode: Mode, fresh = true) => this.play(mode, fresh),
       input: (ev: InputEvent) => this.inputs.push(ev),
       levelSize: () => LEVEL.length,
+      /** Start a run with this seed and fast-forward through recorded inputs (as the real game would play them). */
+      runRoute: (route: { mode: Mode; seed: number; inputs: (InputEvent & { tick: number })[] }) => {
+        this.play(route.mode, true);
+        this.sim = Sim.create(route.mode, route.seed);
+        this.prev = snapshot(this.sim);
+        const byTick = new Map<number, InputEvent[]>();
+        for (const i of route.inputs) byTick.set(i.tick, [...(byTick.get(i.tick) ?? []), { kind: i.kind, x: i.x, y: i.y }]);
+        const last = Math.max(0, ...route.inputs.map(i => i.tick)) + 600;
+        while (!this.sim.state.won && this.sim.state.stats.ticks < last) {
+          this.inputs.push(...(byTick.get(this.sim.state.stats.ticks) ?? []));
+          this.tick();
+        }
+        return this.sim.state.won;
+      },
     };
   }
 }

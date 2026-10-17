@@ -14,6 +14,9 @@
 //    hard-coded exceptions for list positions 31 and 50.
 //  - A moving girder that pushes a stationary dude pushes him out of the side it came
 //    from, instead of sometimes teleporting him through to the other side.
+//  - Standing on top of goop now counts as stuck for the goop timer. The original stopped
+//    him dead there without starting the timer, which could softlock you on a goop block
+//    with no target in reach.
 //
 // Kept on purpose, including the odd bits: reversed gravity while hooked, spring bounces
 // that multiply by 1.75 with no cap, riding moving girders at platform speed + 2, the goop
@@ -193,7 +196,8 @@ function verticalPass(c: Ctx): boolean {
           d.vx = 0;
           o.onGoopTop = true;
           responded = true;
-          // Landing on top of static goop stops him dead, but the original never set onSticky here.
+          // Landing on top of static goop stops him dead. The original never set onSticky here;
+          // onGoopTop makes it count for the goop timer (see the fixes above).
           if (incoming >= 3) c.events.push({ type: 'goopStick', x: d.x + DUDE.w / 2, y: p.y, side: 'top' });
         }
         break;
@@ -430,13 +434,14 @@ export interface OriginalTickResult {
 export function stepOriginal(d: DudeState, o: OriginalState, world: WorldState, rng: { rng: number }, events: SimEvent[]): OriginalTickResult {
   const c: Ctx = { d, o, world, rng, events, won: false, collided: false };
 
-  if (o.onSticky) o.dying++;
+  if (o.onSticky || o.onGoopTop) o.dying++;
   else o.dying = 0;
   if (o.dying === GOOP_TICKS) {
     events.push({ type: 'goopReset', x: d.x, y: d.y });
     d.x = GOOP_RESET.x;
     d.y = GOOP_RESET.y;
     o.onSticky = false;
+    o.onGoopTop = false;
     o.stuckSide = null;
     o.dying = 0;
   }

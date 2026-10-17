@@ -40,6 +40,14 @@ describe('New Age: springs', () => {
     expect(s.state.dude.vy).toBe(-NA.springCap);
   });
 
+  it('keep him rolling, so he can never bounce in place forever', () => {
+    // dead still on top of the tall spring wall, in the 50 px slot under the floor
+    const s = place(sim('newage'), 902, 1100, 0, 0.5);
+    s.state.dude.facing = 1;
+    run(s, 120);
+    expect(s.state.dude.x).toBeGreaterThan(950);
+  });
+
   it('always give at least a small boing', () => {
     const s = place(sim('newage'), 1800, 1099.5, 0, 1);
     s.step();

@@ -309,7 +309,7 @@ export interface StaticLayer {
   canvas: HTMLCanvasElement;
 }
 
-/** Paint everything that never moves into one world-sized canvas. */
+/** Paint everything that never moves (in both modes) into one world-sized canvas. */
 export function buildStaticLayer(): StaticLayer {
   const c = makeCanvas(WORLD_PX.w, WORLD_PX.h);
   const ctx = ctx2d(c);
@@ -340,7 +340,8 @@ export function buildStaticLayer(): StaticLayer {
 
   for (let i = 0; i < LEVEL.length; i++) {
     const def = LEVEL[i];
-    if (def.mover || def.role) continue;
+    // movers, map tricks and mode-only pieces are drawn every frame instead
+    if (def.mover || def.role || def.onlyIn) continue;
     const b = toPx(def);
     if (def.kind === 'girder') drawGirder(ctx, b, def.w >= 100 && def.h >= 100);
     else if (def.kind === 'goop') drawGoopBody(ctx, b);

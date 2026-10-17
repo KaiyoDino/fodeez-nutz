@@ -241,6 +241,9 @@ function resolveY(c: Ctx, prevY: number): void {
       }
       if (def.kind === 'spring') {
         d.vy = -clamp(speed * NA.springMult, NA.springMin, NA.springCap);
+        // his wheels touch the pad, so he keeps rolling (and can't bounce in place forever)
+        const rel = d.vx - c.pdx[i];
+        if (Math.abs(rel) < NA.cruise) d.vx += d.facing * Math.min(1, NA.cruise - Math.abs(rel));
         c.events.push({ type: 'spring', speed, x: d.x + DUDE.w / 2, y: p.y, axis: 'y' });
         continue;
       }

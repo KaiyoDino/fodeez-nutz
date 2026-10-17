@@ -117,6 +117,7 @@ export class UI {
       logo(),
       el('p', { className: 'tagline', textContent: 'No checkpoints. One plunger. A long way up.' }),
       buttons,
+      el('p', { className: 'rotate-hint', textContent: 'Tip: turn your phone sideways for a bigger view.' }),
     ]);
     this.mount(panel, { dim: false });
   }

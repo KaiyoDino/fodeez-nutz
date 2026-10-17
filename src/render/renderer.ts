@@ -6,7 +6,7 @@ import { DUDE, heightOf, LEVEL, TELEPORTS, WORLD } from '../sim/level';
 import { handOf, NA } from '../sim/newage';
 import { HOOK_RANGE, HOOK_SIZE } from '../sim/original';
 import type { Sim } from '../sim/sim';
-import type { Mode, SimEvent } from '../sim/types';
+import type { SimEvent } from '../sim/types';
 import { isVisible } from '../sim/world';
 import { drawBackdrop, drawGround, drawSky, type View } from './background';
 import { drawCameos } from './cameos';
@@ -72,7 +72,6 @@ export class Renderer {
   private dpr = 1;
   private k = 1;
 
-  private statics = new Map<Mode, HTMLCanvasElement>();
   private platformArt = new Map<number, HTMLCanvasElement>();
 
   camX = 0;
@@ -105,13 +104,10 @@ export class Renderer {
     }
   }
 
-  private staticFor(mode: Mode): HTMLCanvasElement {
-    let c = this.statics.get(mode);
-    if (!c) {
-      c = buildStaticLayer().canvas;
-      this.statics.set(mode, c);
-    }
-    return c;
+  private staticLayer: HTMLCanvasElement | null = null;
+  private staticFor(): HTMLCanvasElement {
+    if (!this.staticLayer) this.staticLayer = buildStaticLayer().canvas;
+    return this.staticLayer;
   }
 
   /** Size the canvas to the window. View is at least 960x540 game px (1920x1080 world). */
@@ -125,9 +121,23 @@ export class Renderer {
     if (aspect >= 16 / 9) {
       this.vh = 540;
       this.vw = Math.round(540 * aspect);
-    } else {
+    } else if (aspect >= 1) {
       this.vw = 960;
       this.vh = Math.round(960 / aspect);
+    } else {
+      // portrait phones: a narrower view so the art isn't microscopic
+      this.vw = 600;
+      this.vh = Math.round(600 / aspect);
+    }
+    // Small screens: shrink the view until a game pixel is about a CSS pixel, but always
+    // keep at least 400 game px (800 world units) on the short side.
+    const cssScale = cssH / this.vh;
+    if (cssScale < 1) {
+      const f = Math.max(cssScale, 400 / Math.min(this.vw, this.vh));
+      if (f < 1) {
+        this.vw = Math.round(this.vw * f);
+        this.vh = Math.round(this.vh * f);
+      }
     }
     this.scale = devH / this.vh;
     this.k = Math.max(1, Math.ceil(this.scale - 1e-6));
@@ -155,8 +165,9 @@ export class Renderer {
     return px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h;
   }
 
+  /** Size of one HUD font pixel, in device pixels: at least 2 CSS px. */
   private hudPx(): number {
-    return Math.max(2, Math.round(this.scale));
+    return Math.max(Math.round(2 * this.dpr), Math.round(this.scale));
   }
 
   private pauseBox() {
@@ -331,7 +342,7 @@ export class Renderer {
     drawSky(ctx, v, f.t);
     drawBackdrop(ctx, v, f.t);
     drawGround(ctx, v);
-    this.blitStatic(ctx, v, s.mode);
+    this.blitStatic(ctx, v);
     this.drawDynamicPlatforms(ctx, f, cx, cy, a, view.grapplesLeft === 0);
     if (s.world.cameos) this.cameoAlpha = Math.min(1, this.cameoAlpha + f.dt * 1.2);
     drawCameos(ctx, cx, cy, f.t, this.cameoAlpha);
@@ -422,8 +433,8 @@ export class Renderer {
     if (f.hud) this.drawHud(f, sim);
   }
 
-  private blitStatic(ctx: Ctx, v: View, mode: Mode): void {
-    const st = this.staticFor(mode);
+  private blitStatic(ctx: Ctx, v: View): void {
+    const st = this.staticFor();
     const sx = Math.max(0, v.x);
     const sy = Math.max(0, v.y);
     const ex = Math.min(st.width, v.x + v.w);
@@ -513,17 +524,20 @@ export class Renderer {
     const dy = to.y - from.y;
     const len = Math.hypot(dx, dy);
     const sag = slack * Math.min(18, len * 0.2);
-    let px = from.x;
-    let py = from.y;
     const steps = Math.max(1, Math.ceil(len / 6));
-    let n = 0;
-    for (let i = 1; i <= steps; i++) {
-      const u = i / steps;
-      const x = from.x + dx * u;
-      const y = from.y + dy * u + Math.sin(u * Math.PI) * sag;
-      line(ctx, px, py, x, y, () => (n++ >> 1) % 2 ? P.ropeD : P.rope);
-      px = x;
-      py = y;
+    // a dark shadow line one pixel below keeps the rope readable on bright sky
+    for (const pass of [0, 1]) {
+      let px = from.x;
+      let py = from.y + (pass ? 0 : 1);
+      let n = 0;
+      for (let i = 1; i <= steps; i++) {
+        const u = i / steps;
+        const x = from.x + dx * u;
+        const y = from.y + dy * u + Math.sin(u * Math.PI) * sag + (pass ? 0 : 1);
+        line(ctx, px, py, x, y, pass ? () => ((n++ >> 1) % 2 ? P.ropeD : P.rope) : 'rgba(26,28,44,0.55)');
+        px = x;
+        py = y;
+      }
     }
     // the plunger: wooden stick and red cup facing along the rope
     const ang = Math.atan2(dy, dx);
@@ -647,7 +661,7 @@ export class Renderer {
     rect(ctx, b.x + 7 * u, b.y + 3 * u, 2 * u, 7 * u, P.white);
     const tag = s.mode === 'original' ? 'ORIGINAL' : 'NEW AGE';
     drawTextOutlined(ctx, tag, b.x - textWidth(tag, u) - 5 * u, b.y + 3 * u, s.mode === 'original' ? P.r2 : P.c2, P.ink, u);
-    if (f.debug) drawTextOutlined(ctx, `DEBUG: 1-${TELEPORTS.length} TELEPORT`, b.x - textWidth(`DEBUG: 1-${TELEPORTS.length} TELEPORT`, u) - 5 * u, b.y + 13 * u, P.y1, P.ink, u);
+    if (f.debug) drawTextOutlined(ctx, `DEBUG: KEYS 1-${TELEPORTS.length} TELEPORT`, pad, this.canvas.height - 12 * u, P.y1, P.ink, u);
 
     // messages
     this.messages = this.messages.filter(m => f.t - m.t0 < m.dur);
@@ -655,11 +669,14 @@ export class Renderer {
     for (const m of this.messages) {
       const age = f.t - m.t0;
       if (age > m.dur - 0.3 && Math.floor(age * 20) % 2) continue;
-      const s2 = u * 3;
+      // as big as fits: 3 HUD pixels per font pixel, smaller on narrow screens
+      const fit = Math.max(1, Math.floor((this.canvas.width * 0.9) / Math.max(1, textWidth(m.text, 1))));
+      const s2 = Math.min(u * 3, fit);
+      const s3 = Math.max(1, Math.min(u * 2, Math.floor((this.canvas.width * 0.9) / Math.max(1, textWidth(m.sub ?? '', 1)))));
       drawTextOutlined(ctx, m.text, Math.round((this.canvas.width - textWidth(m.text, s2)) / 2), my, m.color, P.ink, s2);
       my += 10 * s2;
       if (m.sub) {
-        drawTextOutlined(ctx, m.sub, Math.round((this.canvas.width - textWidth(m.sub, u * 2)) / 2), my - 4 * s2 + 2 * u, P.s4, P.ink, u * 2);
+        drawTextOutlined(ctx, m.sub, Math.round((this.canvas.width - textWidth(m.sub, s3)) / 2), my - 4 * s2 + 2 * u, P.s4, P.ink, s3);
         my += 6 * u;
       }
     }

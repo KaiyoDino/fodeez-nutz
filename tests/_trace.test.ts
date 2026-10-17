@@ -4,7 +4,8 @@ import type { InputEvent } from '../src/sim/types';
 import { Sim } from '../src/sim/sim';
 import type { Route } from './route-finder';
 
-it('trace', () => {
+// Dev tool: TRACE_MODE=original|newage npx vitest run tests/_trace.test.ts writes tests/_trace.txt
+it.skipIf(!process.env.TRACE_MODE)('trace', () => {
   const mode = process.env.TRACE_MODE ?? 'original';
   const route = JSON.parse(readFileSync(`tests/routes/${mode}.json`, 'utf8')) as Route;
   const sim = Sim.create(route.mode, route.seed);

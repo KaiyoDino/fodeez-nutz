@@ -1,4 +1,4 @@
-import { DUDE, heightOf, START, TELEPORTS } from './level';
+import { DUDE, heightOf, LEVEL, START, TELEPORTS } from './level';
 import { applyNewAgeInput, handOf, newNewAgeState, stepNewAge, type NewAgeState } from './newage';
 import { applyOriginalInput, HOOK_SIZE, newOriginalState, stepOriginal, type OriginalState } from './original';
 import type { DudeState, DudeView, HookView, InputEvent, Mode, SimEvent, Stats } from './types';
@@ -47,6 +47,8 @@ export function loadSimState(raw: unknown): SimState | null {
   const s = raw as SimState;
   if (s.v !== SAVE_VERSION || (s.mode !== 'original' && s.mode !== 'newage')) return null;
   if (!s.dude || !s.world || !s.stats || !Array.isArray(s.world.platX) || s.world.mode !== s.mode) return null;
+  // a save from a different version of the map can't be resumed
+  if (s.world.platX.length !== LEVEL.length || s.world.platDx.length !== LEVEL.length) return null;
   if (s.mode === 'original' && !s.original) return null;
   if (s.mode === 'newage' && !s.newage) return null;
   const nums = [s.dude.x, s.dude.y, s.dude.vx, s.dude.vy];
