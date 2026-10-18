@@ -366,7 +366,8 @@ function decorTower(ctx: Ctx, wpx: { w: number; h: number }): void {
   stencil(15, 280, '4');
 }
 
-const DECOR: Record<MapId, (ctx: Ctx, wpx: { w: number; h: number }) => void> = {
+/** Background decorations of the built-in maps (player maps have none). */
+const DECOR: Partial<Record<MapId, (ctx: Ctx, wpx: { w: number; h: number }) => void>> = {
   tower: decorTower,
   crane: (ctx, wpx) => decorCrane(ctx, wpx),
 };
@@ -379,7 +380,7 @@ export interface StaticLayer {
 export function buildDecorLayer(map: MapDef): HTMLCanvasElement {
   const wpx = worldPx(map);
   const c = makeCanvas(wpx.w, wpx.h);
-  DECOR[map.id](ctx2d(c), wpx);
+  DECOR[map.id]?.(ctx2d(c), wpx);
   return c;
 }
 
@@ -388,7 +389,7 @@ export function buildStaticLayer(map: MapDef): StaticLayer {
   const wpx = worldPx(map);
   const c = makeCanvas(wpx.w, wpx.h);
   const ctx = ctx2d(c);
-  DECOR[map.id](ctx, wpx);
+  DECOR[map.id]?.(ctx, wpx);
 
   const plats = map.platforms;
   for (let i = 0; i < plats.length; i++) {

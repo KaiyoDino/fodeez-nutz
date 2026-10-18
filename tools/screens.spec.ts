@@ -3,6 +3,7 @@
 import { test } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { newDoc } from '../src/sim/custom-map';
 
 const shots: [string, string, { width: number; height: number }][] = [
   ['phone-title', '/', { width: 390, height: 844 }],
@@ -96,4 +97,75 @@ test('win-online', async ({ page }) => {
   await page.evaluate(route => (window as unknown as Win).__game.runRoute(route), routeFile('crane-newage'));
   await page.waitForTimeout(2200);
   await page.screenshot({ path: `${import.meta.dirname}/../screenshots/win-online.png` });
+});
+
+// The map maker and community maps.
+const starterRun = (mode: string) => JSON.parse(readFileSync(join(import.meta.dirname, '..', 'tests', 'fixtures', `starter-${mode}.json`), 'utf8'));
+type MapsWin = { __game: { runRoute(r: unknown): boolean; drafts(): { id: string }[] } };
+
+test('map-maker', async ({ page }) => {
+  await page.goto('/?debug');
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.getByRole('button', { name: 'Play', exact: true }).click();
+  await page.getByRole('button', { name: 'Open the map maker' }).click();
+  await page.getByRole('button', { name: 'Copy The Crane' }).click();
+  await page.waitForTimeout(600);
+  await page.screenshot({ path: `${import.meta.dirname}/../screenshots/editor-ingame.png` });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: `${import.meta.dirname}/../screenshots/phone-editor.png` });
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.locator('.ed').getByRole('button', { name: 'Done' }).click();
+  await page.getByRole('button', { name: 'New map' }).click();
+  await page.locator('.ed').getByRole('button', { name: 'Done' }).click();
+  const drafts = await page.evaluate(() => (window as unknown as MapsWin).__game.drafts());
+  await page.evaluate(([r, id]) => (window as unknown as MapsWin).__game.runRoute({ ...r, map: id }), [starterRun('newage'), drafts[0].id] as const);
+  await page.waitForTimeout(2000);
+  await page.screenshot({ path: `${import.meta.dirname}/../screenshots/win-draft.png` });
+  await page.getByRole('button', { name: 'Title' }).click();
+  await page.getByRole('button', { name: 'Play', exact: true }).click();
+  await page.screenshot({ path: `${import.meta.dirname}/../screenshots/choose-map.png` });
+  await page.getByRole('button', { name: 'Open the map maker' }).click();
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: `${import.meta.dirname}/../screenshots/map-maker.png` });
+});
+
+test('community', async ({ page, request }) => {
+  const token = async (name: string) => {
+    const lid = [...name.padEnd(16, '0')].map(c => (c.charCodeAt(0) % 16).toString(16)).join('').padEnd(32, '0').slice(0, 32);
+    await request.post('/api/auth/dev-login', { form: { lid, name } });
+    return (await (await request.get(`/api/auth/poll?lid=${lid}`)).json()).token as string;
+  };
+  const maker = await token('Kaiyo');
+  const ids: string[] = [];
+  for (const [mode, name] of [['newage', 'Plunger Practice'], ['original', 'The Old Way Up']]) {
+    const r = starterRun(mode);
+    let t = 0;
+    const i: number[] = [];
+    for (const e of r.inputs) {
+      i.push(e.tick - t, e.kind === 'press' ? 0 : 1, e.x, e.y);
+      t = e.tick;
+    }
+    const doc = newDoc(name, mode as 'newage' | 'original');
+    const res = await (await request.post('/api/maps/upload', { data: { doc, replay: { v: 1, map: 'draft-x', mode, seed: r.seed, ticks: r.ticks, physics: r.physics, mapHash: r.mapHash, i } }, headers: { Authorization: `Bearer ${maker}` } })).json();
+    if (res.map) ids.push(res.map.id);
+  }
+  for (const [n, stars] of [['ana', 5], ['ben', 4], ['cat', 4]] as const) {
+    const tk = await token(n);
+    if (ids[0]) await request.post('/api/maps/rate', { data: { id: ids[0], stars }, headers: { Authorization: `Bearer ${tk}` } });
+  }
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto('/?debug');
+  await page.getByRole('button', { name: 'Play', exact: true }).click();
+  await page.getByRole('button', { name: 'Browse community maps' }).click();
+  await page.waitForTimeout(600);
+  await page.screenshot({ path: `${import.meta.dirname}/../screenshots/community.png` });
+  await page.locator('.map-row').first().getByRole('button', { name: 'Open' }).click();
+  await page.waitForTimeout(600);
+  await page.screenshot({ path: `${import.meta.dirname}/../screenshots/community-map.png` });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: `${import.meta.dirname}/../screenshots/phone-community-map.png` });
 });

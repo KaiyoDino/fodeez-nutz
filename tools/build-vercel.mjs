@@ -39,12 +39,12 @@ await build({
 
 // ...copied to each endpoint. (One function per path keeps routing trivial: Vercel maps
 // functions/api/board.func to /api/board.) Checking a submitted run can take a while.
-const ENDPOINTS = ['health', 'me', 'board', 'replay', 'submit', 'auth/start', 'auth/callback', 'auth/poll', 'auth/logout', 'admin/remove'];
+const ENDPOINTS = ['health', 'me', 'board', 'replay', 'submit', 'auth/start', 'auth/callback', 'auth/poll', 'auth/logout', 'admin/remove', 'maps', 'maps/get', 'maps/mine', 'maps/upload', 'maps/rate', 'maps/delete'];
 for (const path of ENDPOINTS) {
   const dir = join(out, 'functions', 'api', `${path}.func`);
   mkdirSync(dir, { recursive: true });
   cpSync(bundle, dir, { recursive: true });
-  const config = { runtime: 'nodejs22.x', handler: 'index.js', launcherType: 'Nodejs', maxDuration: path === 'submit' ? 300 : 15 };
+  const config = { runtime: 'nodejs22.x', handler: 'index.js', launcherType: 'Nodejs', maxDuration: path === 'submit' || path === 'maps/upload' ? 300 : 15 };
   writeFileSync(join(dir, '.vc-config.json'), JSON.stringify(config, null, 2));
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ type: 'commonjs' }));
 }

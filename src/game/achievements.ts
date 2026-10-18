@@ -32,7 +32,7 @@ const BEAT: Record<string, { name: string; wheels: WheelId }> = {
   'crane:newage': { name: 'Topped Out', wheels: 'goop' },
 };
 
-const totalWins = (s: SaveData) => Object.values(s.wins).reduce((a, b) => a + (b ?? 0), 0);
+const totalWins = (s: SaveData): number => Object.values(s.wins).reduce<number>((a, b) => a + (b ?? 0), 0);
 
 function levelAchievements(map: MapId, mode: Mode): Achievement[] {
   const key = runKey(map, mode);

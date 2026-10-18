@@ -4,6 +4,7 @@
 // The server's address is baked in at build time with VITE_API_URL. Without it (and outside
 // the dev server, which serves the API itself) the game has no online features at all.
 
+import type { MapDoc } from '../sim/custom-map';
 import { getMap, type MapId } from '../sim/level';
 import { mapHash, packReplay, PHYSICS_VERSION, replayIsCurrent, unpackReplay, type Replay } from '../sim/replay';
 import type { Mode } from '../sim/types';
@@ -44,6 +45,32 @@ export interface Board {
 export type SubmitResult =
   | { ok: true; improved: boolean; rank: number | null; ticks?: number; cutoff?: number }
   | { ok: false; error: string; message: string };
+
+/** A community map as the server lists it. */
+export interface MapSummary {
+  id: string;
+  name: string;
+  mode: Mode;
+  theme: MapDoc['theme'];
+  creator: OnlineUser;
+  created: string;
+  pieces: number;
+  /** The creator's winning time. */
+  creatorTicks: number;
+  rating: { avg: number | null; count: number };
+  /** How many other players have beaten it, and their average time on that first win. */
+  clears: number;
+  avgTicks: number | null;
+}
+
+export type MapSort = 'top' | 'new' | 'clears';
+
+/** How hard a community map is, from how long other players took to beat it the first time. */
+export function difficulty(m: Pick<MapSummary, 'avgTicks' | 'clears'>): string {
+  if (m.avgTicks === null || !m.clears) return 'Difficulty unknown';
+  const min = m.avgTicks / 3600;
+  return min < 1 ? 'Easy' : min < 5 ? 'Medium' : min < 20 ? 'Hard' : 'Brutal';
+}
 
 /** What the server calls a level: one map in one mode. */
 export const levelId = (map: MapId, mode: Mode) => `${map}:${mode}`;
@@ -148,6 +175,36 @@ export class Online {
     const r = unpackReplay(raw);
     if (!r) throw new OnlineError('bad-replay', 'That replay couldn’t be read.');
     return r;
+  }
+
+  async listMaps(sort: MapSort, offset = 0): Promise<{ maps: MapSummary[]; more: boolean }> {
+    return this.call(`/api/maps?sort=${sort}&offset=${offset}`);
+  }
+
+  async getMap(id: string): Promise<{ map: MapSummary; doc: MapDoc; yourRating: number | null; version: string }> {
+    return this.call(`/api/maps/get?id=${encodeURIComponent(id)}`, {}, true);
+  }
+
+  async myMaps(): Promise<MapSummary[]> {
+    return (await this.call<{ maps: MapSummary[] }>('/api/maps/mine', {}, true)).maps;
+  }
+
+  /** Upload a map with the creator's winning run on it. */
+  async uploadMap(doc: MapDoc, run: Replay): Promise<{ ok: true; map: MapSummary } | { ok: false; error: string; message: string }> {
+    try {
+      return await this.call('/api/maps/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ doc, replay: packReplay(run) }) }, true);
+    } catch (e) {
+      const err = e as OnlineError;
+      return { ok: false, error: err.code ?? 'server', message: err.message };
+    }
+  }
+
+  async rateMap(id: string, stars: number): Promise<{ rating: MapSummary['rating']; yourRating: number }> {
+    return this.call('/api/maps/rate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, stars }) }, true);
+  }
+
+  async deleteMap(id: string): Promise<void> {
+    await this.call(`/api/maps/delete?id=${encodeURIComponent(id)}`, { method: 'POST' }, true);
   }
 
   /** Post a winning run. Only runs recorded with this version of the game can go on the board. */

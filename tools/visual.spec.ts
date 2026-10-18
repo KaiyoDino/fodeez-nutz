@@ -68,10 +68,10 @@ test('editor round trip', async ({ page }) => {
   await page.goto('/editor.html?map=tower');
   await page.waitForTimeout(500);
   // the trapdoor is around world (1250, 1075); find its screen spot from the canvas transform
-  const box = (await page.locator('#view').boundingBox())!;
+  const box = (await page.locator('.ed-view').boundingBox())!;
   const at = await page.evaluate(() => {
     // fit(): zoom = min(w / (W + 200), h / (H + 200))
-    const c = document.getElementById('view')!;
+    const c = document.querySelector<HTMLElement>('.ed-view')!;
     const w = c.clientWidth;
     const h = c.clientHeight;
     const zoom = Math.min(w / 2200, h / 4100);

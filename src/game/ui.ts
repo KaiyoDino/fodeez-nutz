@@ -5,13 +5,15 @@ import { bigText } from '../render/font';
 import { P } from '../render/palette';
 import { formatTime } from '../render/renderer';
 import { WHEEL_IDS, WHEELS, type WheelId } from '../render/wheels';
+import { docFromMap, newDoc, type MapDoc } from '../sim/custom-map';
 import { getMap, heightOf, MAP_IDS, type MapId } from '../sim/level';
 import { replayIsCurrent, type Replay } from '../sim/replay';
 import type { Mode, Stats } from '../sim/types';
 import { ACHIEVEMENTS, unlockedWheels, unlockFor } from './achievements';
-import { localVersion, type Board, type Online } from './online';
+import { difficulty, localVersion, type Board, type MapSort, type MapSummary, type Online } from './online';
 import { SPEEDS } from './replay-player';
 import { runKey, type Best, type SavedRun, type SaveData, type Settings } from './save';
+import type { UserMaps } from './user-maps';
 
 export interface UIHandlers {
   play(map: MapId, mode: Mode, fresh: boolean): void;
@@ -28,6 +30,15 @@ export interface UIHandlers {
   /** Called once a sign-in finishes (the game then posts your saved best times). */
   signedIn(): void;
   setWheels(id: WheelId): void;
+  /** The player's own maps and the community maps kept on this device. */
+  maps: UserMaps;
+  /** Open the map maker on a draft. */
+  openEditor(id: string): void;
+  /** Play a draft or community map; `back` is where quitting the run goes. */
+  playMap(id: string, mode: Mode, fresh: boolean, back: () => void): void;
+  /** A draft's winning run (if it has one for its current layout) and a line about it. */
+  draftInfo(id: string): { run: Replay | null; canUpload: boolean; status: string };
+  uploadDraft(id: string): Promise<{ ok: true; id: string } | { ok: false; message: string }>;
 }
 
 export interface ReplayBarHandlers {
@@ -74,6 +85,12 @@ function logo(): HTMLImageElement {
 }
 
 const MODES: Mode[] = ['original', 'newage'];
+
+/** Five stars for an average rating (rounded to whole stars). */
+const stars = (avg: number | null): string => {
+  const n = avg === null ? 0 : Math.round(avg);
+  return '★'.repeat(n) + '☆'.repeat(5 - n);
+};
 
 const wheelPics = new Map<WheelId, string>();
 /** A picture of the dude wearing a set of wheels (for the wheel picker). */
@@ -267,7 +284,24 @@ export class UI {
       ]);
       cards.append(card);
     }
-    const panel = el('div', { className: 'panel wide' }, [el('h1', { textContent: 'Choose a map' }), cards, el('div', { className: 'row' }, [this.button('Back', goBack, { kind: 'quiet', sound: 'back' })])]);
+    const again = () => this.showMaps(save, back);
+    const more = el('div', { className: 'modes' });
+    if (this.h.online.enabled)
+      more.append(
+        el('section', { className: 'card community' }, [
+          el('h2', { textContent: 'Community maps' }),
+          el('p', { textContent: 'Maps made by other players, rated and ranked.' }),
+          el('div', { className: 'stack' }, [this.button('Browse community maps', () => this.showCommunity(save, 'top', again))]),
+        ]),
+      );
+    more.append(
+      el('section', { className: 'card maker' }, [
+        el('h2', { textContent: 'Map maker' }),
+        el('p', { textContent: this.h.online.enabled ? 'Build your own map, beat it, and share it.' : 'Build your own map and play it.' }),
+        el('div', { className: 'stack' }, [this.button('Open the map maker', () => this.showMyMaps(save, again))]),
+      ]),
+    );
+    const panel = el('div', { className: 'panel wide' }, [el('h1', { textContent: 'Choose a map' }), cards, more, el('div', { className: 'row' }, [this.button('Back', goBack, { kind: 'quiet', sound: 'back' })])]);
     this.mount(panel, { escape: goBack });
   }
 
@@ -435,7 +469,6 @@ export class UI {
 
   /** The top 100 for one level, with a level picker and the replays to watch. */
   showLeaderboards(save: SaveData, map: MapId, mode: Mode, back: () => void): void {
-    const online = this.h.online;
     const again = () => this.showLeaderboards(save, map, mode, back);
     const picker = el('div', { className: 'choices level-picker', role: 'radiogroup' } as Partial<HTMLDivElement>);
     picker.setAttribute('aria-label', 'Level');
@@ -461,8 +494,13 @@ export class UI {
     ]);
     this.mount(panel, { escape: back });
 
+    this.fillBoard(save, map, mode, `${getMap(map).name}, ${modeName(mode)}`, list, footer, panel, again);
+  }
+
+  /** Load a level's board into `list`, with your own standing (and a way to post your best) in `footer`. */
+  private fillBoard(save: SaveData, map: MapId, mode: Mode, title: string, list: HTMLElement, footer: HTMLElement, panel: HTMLElement, again: () => void): void {
+    const online = this.h.online;
     const key = runKey(map, mode);
-    const title = `${getMap(map).name}, ${modeName(mode)}`;
     online.board(map, mode).then(
       (b: Board) => {
         if (!panel.isConnected) return;
@@ -523,6 +561,252 @@ export class UI {
         if (panel.isConnected) list.replaceChildren(el('p', { className: 'muted', textContent: (err as Error).message }));
       },
     );
+  }
+
+  // ------------------------------------------------------------ the map maker and community maps
+
+  /** Your own maps: make one, edit it, beat it, upload it. */
+  showMyMaps(save: SaveData, back: () => void): void {
+    const again = () => this.showMyMaps(save, back);
+    const maps = this.h.maps;
+    const make = (doc: MapDoc) => {
+      const d = maps.addDraft(doc);
+      this.h.openEditor(d.id);
+    };
+    const untitled = () => `My map ${maps.drafts.length + 1}`;
+    const news = el('div', { className: 'row' }, [
+      this.button('New map', () => make(newDoc(untitled(), 'newage')), { kind: 'primary', autofocus: true }),
+      this.button('Copy The Tower', () => make(docFromMap(getMap('tower'), 'original', `${untitled()} (from The Tower)`)), { small: true }),
+      this.button('Copy The Crane', () => make(docFromMap(getMap('crane'), 'newage', `${untitled()} (from The Crane)`)), { small: true }),
+    ]);
+    const list = el('div', { className: 'map-list' });
+    for (const d of maps.drafts) {
+      const info = this.h.draftInfo(d.id);
+      const actions = el('div', { className: 'map-actions' }, [
+        this.button('Edit', () => this.h.openEditor(d.id), { small: true, kind: 'primary' }),
+        this.button('Play', () => this.h.playMap(d.id, d.doc.mode, true, again), { small: true }),
+      ]);
+      if (this.h.online.enabled && info.run && info.canUpload) {
+        const up = this.button(d.uploaded ? 'Upload new version' : 'Upload', () => this.upload(d.id, up, again), { small: true });
+        actions.append(up);
+      }
+      if (d.uploaded && this.h.online.enabled) actions.append(this.button('See it', () => this.showCommunityMap(save, d.uploaded!.id, again), { small: true, kind: 'quiet' }));
+      actions.append(this.confirmButton('Delete', `Delete “${d.doc.name}” from this device?`, () => {
+        maps.deleteDraft(d.id);
+        again();
+      }));
+      list.append(
+        el('section', { className: 'map-row' }, [
+          el('div', { className: 'map-info' }, [
+            el('h2', { textContent: d.doc.name }),
+            el('p', { className: 'muted', textContent: `${modeName(d.doc.mode)} · ${d.doc.platforms.length} pieces` }),
+            el('p', { className: 'map-status', textContent: info.status }),
+          ]),
+          actions,
+        ]),
+      );
+    }
+    if (!maps.drafts.length) list.append(el('p', { className: 'muted', textContent: 'No maps yet. Start a new one, or copy one of the built-in maps to change it.' }));
+    const panel = el('div', { className: 'panel wide' }, [
+      el('h1', { textContent: 'Map maker' }),
+      el('p', { className: 'muted', textContent: 'Build a map, beat it yourself from the start, then upload it for everyone to play. Your maps are saved on this device.' }),
+      news,
+      list,
+      el('div', { className: 'row' }, [this.button('Back', back, { kind: 'quiet', sound: 'back' })]),
+    ]);
+    this.mount(panel, { escape: back });
+  }
+
+  /** Upload a draft (signing in first if needed). */
+  private upload(id: string, btn: HTMLButtonElement, after: () => void): void {
+    if (!this.h.online.session) {
+      this.showSignIn(after, after);
+      return;
+    }
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Checking your run…';
+    this.h.uploadDraft(id).then(r => {
+      if (r.ok) {
+        this.toast('Uploaded!', 'Your map is on the community maps now.');
+        after();
+        return;
+      }
+      this.toast('Couldn’t upload it', r.message);
+      if (!btn.isConnected) return;
+      btn.disabled = false;
+      btn.textContent = label;
+    });
+  }
+
+  /** Browse the community maps. */
+  showCommunity(save: SaveData, sort: MapSort, back: () => void): void {
+    const online = this.h.online;
+    const again = () => this.showCommunity(save, sort, back);
+    const picker = el('div', { className: 'choices', role: 'radiogroup' } as Partial<HTMLDivElement>);
+    picker.setAttribute('aria-label', 'Order');
+    for (const [value, label] of [['top', 'Top rated'], ['new', 'Newest'], ['clears', 'Most beaten']] as [MapSort, string][]) {
+      const b = this.button(label, () => this.showCommunity(save, value, back), { small: true, kind: 'quiet' });
+      b.setAttribute('role', 'radio');
+      b.setAttribute('aria-checked', String(value === sort));
+      b.classList.toggle('active', value === sort);
+      if (value === sort) b.dataset.autofocus = '';
+      picker.append(b);
+    }
+    const list = el('div', { className: 'map-list' }, [el('p', { className: 'muted', textContent: 'Loading…' })]);
+    const more = el('div', { className: 'row' });
+    const panel = el('div', { className: 'panel wide' }, [
+      el('h1', { textContent: 'Community maps' }),
+      this.account(again),
+      picker,
+      list,
+      more,
+      el('div', { className: 'row' }, [this.button('Make your own', () => this.showMyMaps(save, again), { kind: 'quiet' }), this.button('Back', back, { kind: 'quiet', sound: 'back' })]),
+    ]);
+    this.mount(panel, { escape: back });
+    let first = true;
+    const load = (offset: number) => {
+      online.listMaps(sort, offset).then(
+        r => {
+          if (!panel.isConnected) return;
+          if (first) list.replaceChildren();
+          first = false;
+          if (!r.maps.length && !offset) list.append(el('p', { className: 'muted', textContent: 'No maps yet. Make the first one!' }));
+          for (const m of r.maps) list.append(this.communityRow(save, m, again));
+          more.replaceChildren();
+          if (r.more) more.append(this.button('More', () => load(offset + r.maps.length), { small: true }));
+        },
+        err => {
+          if (panel.isConnected) list.replaceChildren(el('p', { className: 'muted', textContent: (err as Error).message }));
+        },
+      );
+    };
+    load(0);
+  }
+
+  private communityRow(save: SaveData, m: MapSummary, back: () => void): HTMLElement {
+    const best = save.best[runKey(m.id, m.mode)];
+    return el('section', { className: 'map-row' }, [
+      el('div', { className: 'map-info' }, [
+        el('h2', { textContent: m.name }),
+        el('p', { className: 'muted', textContent: `by ${m.creator.name} · ${modeName(m.mode)}` }),
+        el('p', { className: 'map-stats' }, [
+          el('span', { className: 'stars', textContent: stars(m.rating.avg) }),
+          ` ${m.rating.count ? `${m.rating.avg} (${m.rating.count})` : 'No ratings'} · ${difficulty(m)}${m.avgTicks ? ` (avg ${formatTime(m.avgTicks)})` : ''} · beaten by ${m.clears} player${m.clears === 1 ? '' : 's'}`,
+          best ? ` · your best ${formatTime(best.ticks)}` : '',
+        ]),
+      ]),
+      el('div', { className: 'map-actions' }, [this.button('Open', () => this.showCommunityMap(save, m.id, back), { small: true, kind: 'primary' })]),
+    ]);
+  }
+
+  /** One community map: its rating, difficulty, leaderboard, and a way to play it. */
+  showCommunityMap(save: SaveData, id: string, back: () => void): void {
+    const online = this.h.online;
+    const again = () => this.showCommunityMap(save, id, back);
+    const body = el('div', { className: 'stack' }, [el('p', { className: 'muted', textContent: 'Loading…' })]);
+    const panel = el('div', { className: 'panel wide' }, [el('h1', { textContent: 'Community map' }), body, el('div', { className: 'row' }, [this.button('Back', back, { kind: 'quiet', sound: 'back' })])]);
+    this.mount(panel, { escape: back });
+    online.getMap(id).then(
+      ({ map: m, doc, yourRating }) => {
+        if (!panel.isConnected) return;
+        this.h.maps.keepCommunity(id, doc, m.creator);
+        panel.querySelector('h1')!.textContent = m.name;
+        const key = runKey(id, m.mode);
+        const run = save.runs[key];
+        const best = save.best[key];
+        const mine = online.session?.user.id === m.creator.id;
+        const table = el('dl', { className: 'stats' });
+        const ratingText = el('dd', { textContent: m.rating.count ? `${stars(m.rating.avg)} ${m.rating.avg} (${m.rating.count} rating${m.rating.count === 1 ? '' : 's'})` : 'No ratings yet' });
+        const rows: [string, string | HTMLElement][] = [
+          ['Made by', m.creator.name],
+          ['Mode', modeName(m.mode)],
+          ['Difficulty', m.clears ? `${difficulty(m)}: other players’ first wins took ${formatTime(m.avgTicks ?? 0)} on average (${m.clears} player${m.clears === 1 ? '' : 's'})` : 'Unknown: nobody but the creator has beaten it yet'],
+          ['Creator’s time', formatTime(m.creatorTicks)],
+        ];
+        if (best) rows.push(['Your best', formatTime(best.ticks)]);
+        table.append(el('dt', { textContent: 'Rating' }), ratingText);
+        for (const [k, v] of rows) table.append(el('dt', { textContent: k }), typeof v === 'string' ? el('dd', { textContent: v }) : v);
+        const play = el('div', { className: 'row' });
+        if (run) {
+          play.append(this.button(`Continue (${describeRun(run)})`, () => this.h.playMap(id, m.mode, false, again), { kind: 'primary', autofocus: true }));
+          play.append(this.confirmButton('New run', 'Throw away your current run?', () => this.h.playMap(id, m.mode, true, again)));
+        } else play.append(this.button('Play', () => this.h.playMap(id, m.mode, true, again), { kind: 'primary', autofocus: true }));
+        play.append(this.button('Leaderboard', () => this.showMapBoard(save, id, m.mode, m.name, again)));
+        const parts: HTMLElement[] = [el('p', { className: 'muted', textContent: `Uploaded ${new Date(m.created).toLocaleDateString()} · ${m.pieces} pieces` }), this.account(again), table];
+        if (!mine && online.session) parts.push(this.ratingPicker(id, yourRating, r => (ratingText.textContent = `${stars(r.avg)} ${r.avg} (${r.count} rating${r.count === 1 ? '' : 's'})`), again));
+        parts.push(play);
+        if (mine)
+          parts.push(
+            this.confirmButton('Delete this map', 'Delete it from the community maps for everyone? Its ratings and times go too.', () => {
+              online.deleteMap(id).then(
+                () => {
+                  this.toast('Deleted', `${m.name} is off the community maps.`);
+                  back();
+                },
+                err => this.toast('Couldn’t delete it', (err as Error).message),
+              );
+            }),
+          );
+        body.replaceChildren(...parts);
+        panel.querySelector<HTMLElement>('[data-autofocus]')?.focus({ preventScroll: true });
+      },
+      err => {
+        if (panel.isConnected) body.replaceChildren(el('p', { className: 'muted', textContent: (err as Error).message }));
+      },
+    );
+  }
+
+  /** Five star buttons for rating a community map (or a sign-in button). */
+  ratingPicker(id: string, current: number | null, onRated: (r: MapSummary['rating']) => void, again: () => void): HTMLElement {
+    const online = this.h.online;
+    if (!online.session) return el('div', { className: 'rate' }, [el('span', { className: 'muted', textContent: 'Sign in to rate this map.' }), this.button('Sign in with itch.io', () => this.showSignIn(again, again), { small: true })]);
+    const group = el('div', { className: 'rate-stars', role: 'radiogroup' } as Partial<HTMLDivElement>);
+    group.setAttribute('aria-label', 'Your rating');
+    const buttons: HTMLButtonElement[] = [];
+    const show = (n: number | null) => buttons.forEach((b, i) => {
+      b.textContent = n !== null && i < n ? '★' : '☆';
+      b.setAttribute('aria-checked', String(n === i + 1));
+    });
+    for (let n = 1; n <= 5; n++) {
+      const b = el('button', { type: 'button', className: 'star' });
+      b.setAttribute('role', 'radio');
+      b.setAttribute('aria-label', `${n} star${n === 1 ? '' : 's'}`);
+      b.addEventListener('mouseenter', () => show(n));
+      b.addEventListener('mouseleave', () => show(current));
+      b.addEventListener('click', () => {
+        this.h.sound('select');
+        online.rateMap(id, n).then(
+          r => {
+            current = r.yourRating;
+            show(current);
+            onRated(r.rating);
+            this.toast('Thanks for rating!');
+          },
+          err => this.toast('Couldn’t save your rating', (err as Error).message),
+        );
+      });
+      buttons.push(b);
+      group.append(b);
+    }
+    show(current);
+    return el('div', { className: 'rate' }, [el('span', { className: 'muted', textContent: 'Your rating:' }), group]);
+  }
+
+  /** The leaderboard of one community map. */
+  showMapBoard(save: SaveData, id: string, mode: Mode, name: string, back: () => void): void {
+    const again = () => this.showMapBoard(save, id, mode, name, back);
+    const list = el('div', { className: 'board' }, [el('p', { className: 'muted', textContent: 'Loading…' })]);
+    const footer = el('div', { className: 'board-footer' });
+    const panel = el('div', { className: 'panel wide' }, [
+      el('h1', { textContent: `${name} · Leaderboard` }),
+      this.account(again),
+      list,
+      footer,
+      el('div', { className: 'row' }, [this.button('Back', back, { kind: 'quiet', sound: 'back', autofocus: true })]),
+    ]);
+    this.mount(panel, { escape: back });
+    this.fillBoard(save, id, mode, name, list, footer, panel, again);
   }
 
   /**
@@ -642,6 +926,34 @@ export class UI {
     setTimeout(() => t.remove(), 4700);
   }
 
+  /** The win screen of a run on your own map: offer to upload it. */
+  winUpload(id: string, again: () => void): void {
+    if (!this.h.online.enabled) return;
+    const info = this.h.draftInfo(id);
+    if (!info.canUpload) {
+      this.setWinStatus(info.status);
+      return;
+    }
+    this.setWinStatus('You beat your own map, so it can go on the community maps.', {
+      label: 'Upload it',
+      run: () => {
+        if (!this.h.online.session) return this.showSignIn(again, again);
+        this.setWinStatus('Checking your run…');
+        this.h.uploadDraft(id).then(r => this.setWinStatus(r.ok ? 'Uploaded! It’s on the community maps now.' : r.message));
+      },
+    });
+  }
+
+  /** The end of a practice run from the map maker (it doesn't count). */
+  showPracticeWin(onAgain: () => void, onBack: () => void): void {
+    const panel = el('div', { className: 'panel win' }, [
+      el('h1', { className: 'yippee', textContent: 'MADE IT!' }),
+      el('p', { className: 'muted', textContent: 'That was a practice run from partway up, so it doesn’t count. To upload your map, beat it with Play from the start.' }),
+      el('div', { className: 'row' }, [this.button('Try again', onAgain, { kind: 'primary', autofocus: true }), this.button('Back to the map maker', onBack, { kind: 'quiet', sound: 'back' })]),
+    ]);
+    this.mount(panel, { dim: false });
+  }
+
   /** Update the leaderboard line on the win screen (if it's still showing). */
   setWinStatus(text: string, action?: { label: string; run: () => void }): void {
     const s = this.winStatus;
@@ -652,16 +964,16 @@ export class UI {
 
   // ------------------------------------------------------------ in a run
 
-  showPause(map: MapId, mode: Mode, save: SaveData): void {
+  showPause(map: MapId, mode: Mode, save: SaveData, quitLabel = 'Quit to title'): void {
     const panel = el('div', { className: 'panel' }, [
       el('h1', { textContent: 'Paused' }),
-      el('p', { className: 'muted', textContent: `${getMap(map).name}, ${modeName(mode)} · your run is saved` }),
+      el('p', { className: 'muted', textContent: `${getMap(map).name}, ${modeName(mode)} · ${quitLabel === 'Back to the map maker' && !save.runs[runKey(map, mode)] ? 'practice run' : 'your run is saved'}` }),
       el('div', { className: 'stack' }, [
         this.button('Resume', () => this.h.resume(), { kind: 'primary', autofocus: true }),
-        this.button('Settings', () => this.showSettings(save.settings, () => this.showPause(map, mode, save))),
-        this.button('How to play', () => this.showHowTo(() => this.showPause(map, mode, save))),
+        this.button('Settings', () => this.showSettings(save.settings, () => this.showPause(map, mode, save, quitLabel))),
+        this.button('How to play', () => this.showHowTo(() => this.showPause(map, mode, save, quitLabel))),
         this.confirmButton('Restart run', 'Start over from the bottom?', () => this.h.restart()),
-        this.button('Quit to title', () => this.h.quitToTitle(), { kind: 'quiet', sound: 'back' }),
+        this.button(quitLabel, () => this.h.quitToTitle(), { kind: 'quiet', sound: 'back' }),
       ]),
     ]);
     this.mount(panel, { escape: () => this.h.resume() });
@@ -775,7 +1087,7 @@ export class UI {
     this.mount(panel, { escape: back });
   }
 
-  showWin(map: MapId, mode: Mode, stats: Stats, best: Best | undefined, isNewBest: boolean, onWatch: (() => void) | null, onAgain: () => void, onTitle: () => void, unlocked: string[] = []): void {
+  showWin(map: MapId, mode: Mode, stats: Stats, best: Best | undefined, isNewBest: boolean, onWatch: (() => void) | null, onAgain: () => void, onTitle: () => void, unlocked: string[] = [], opts: { backLabel?: string; extra?: HTMLElement[] } = {}): void {
     const m = getMap(map);
     const rows: [string, string][] = [
       ['Time', formatTime(stats.ticks)],
@@ -789,13 +1101,14 @@ export class UI {
     const buttons: HTMLElement[] = [];
     if (onWatch) buttons.push(this.button('Watch replay', onWatch, { kind: 'primary', autofocus: true }));
     buttons.push(this.button('Play again', onAgain, { kind: onWatch ? undefined : 'primary', autofocus: !onWatch }));
-    buttons.push(this.button('Title', onTitle, { kind: 'quiet', sound: 'back' }));
+    buttons.push(this.button(opts.backLabel ?? 'Title', onTitle, { kind: 'quiet', sound: 'back' }));
     const panel = el('div', { className: 'panel win' }, [
       el('h1', { className: 'yippee', textContent: 'YIPPEE!' }),
       el('p', { className: 'muted', textContent: `You beat ${m.name} in ${modeName(mode)}.` }),
       isNewBest ? el('p', { className: 'badge', textContent: 'New best time' }) : best ? el('p', { className: 'muted', textContent: `Best: ${formatTime(best.ticks)}` }) : '',
       table,
       unlocked.length ? el('div', { className: 'unlocked' }, [el('p', { className: 'muted', textContent: 'Achievements earned' }), ...unlocked.map(u => el('p', { textContent: `★ ${u}` }))]) : '',
+      ...(opts.extra ?? []),
       el('div', { className: 'row' }, buttons),
     ]);
     const status = this.h.online.enabled ? el('div', { className: 'online-status' }) : null;

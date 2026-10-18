@@ -1,8 +1,9 @@
 // Leaderboards and achievements in the browser. The dev server runs the leaderboard API with
 // an in-memory store and a "type any name" sign-in (tools/api-plugin.ts).
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { blockPopups, collectErrors, signIn } from './helpers';
 
 const routesDir = join(import.meta.dirname, '..', 'src', 'data', 'routes');
 const route = (name: string) => JSON.parse(readFileSync(join(routesDir, `${name}.json`), 'utf8'));
@@ -11,15 +12,6 @@ interface GameApi {
   phase(): string;
   save(): { wheels: string; progress: { unlocked: Record<string, string> }; online: { user: { name: string } } | null };
   runRoute(route: unknown): boolean;
-}
-
-function collectErrors(page: Page): string[] {
-  const errors: string[] = [];
-  page.on('pageerror', e => errors.push(String(e)));
-  page.on('console', m => {
-    if (m.type() === 'error') errors.push(m.text());
-  });
-  return errors;
 }
 
 test('beating a level earns its achievement and wheels', async ({ page }) => {
@@ -46,22 +38,16 @@ test('beating a level earns its achievement and wheels', async ({ page }) => {
 
 test('sign in, post a time, and watch it from the leaderboard', async ({ page }) => {
   const errors = collectErrors(page);
+  await blockPopups(page);
   await page.goto('/?debug');
   await page.evaluate(() => localStorage.clear());
   await page.reload();
   await page.getByRole('button', { name: 'Leaderboards' }).click();
   await expect(page.getByRole('heading', { name: 'Leaderboards' })).toBeVisible();
 
-  // the sign-in page opens in a new tab; the game notices when it's done
-  const popupPromise = page.waitForEvent('popup');
-  await page.getByRole('button', { name: 'Sign in with itch.io' }).click();
-  const popup = await popupPromise;
-  await expect(page.getByRole('heading', { name: 'Sign in with itch.io' })).toBeVisible();
-  await popup.getByRole('textbox', { name: 'Name' }).fill('Tester');
-  await popup.getByRole('button', { name: 'Sign in' }).click();
-  await expect(popup.getByRole('heading', { name: 'Signed in' })).toBeVisible();
-  await expect(page.locator('.account')).toContainText('Tester', { timeout: 10_000 });
-  await popup.close().catch(() => undefined);
+  // the sign-in page is finished in another tab; the game notices when it's done
+  await signIn(page, 'Tester');
+  await expect(page.locator('.account')).toContainText('Tester');
 
   // win, and the time goes up by itself
   const won = await page.evaluate(r => (window as unknown as { __game: GameApi }).__game.runRoute(r), route('crane-original'));

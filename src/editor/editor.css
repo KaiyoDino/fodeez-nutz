@@ -1,41 +1,42 @@
-:root {
-  --ink: #1a1c2c;
-  --panel: #1b1838;
-  --panel-2: #2a2152;
-  --text: #f6f6f2;
-  --muted: #b9b3d9;
-  --yellow: #ffc23a;
-  --red: #e8664c;
-  --font: 'Tiny5', 'Courier New', monospace;
+/* The level editor. Everything is scoped to .ed so it can sit inside the game too. */
+.ed {
+  --ed-ink: #1a1c2c;
+  --ed-panel: #1b1838;
+  --ed-panel-2: #2a2152;
+  --ed-text: #f6f6f2;
+  --ed-muted: #b9b3d9;
+  --ed-yellow: #ffc23a;
+  --ed-red: #e8664c;
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  background: #0b0a1c;
+  color: var(--ed-text);
+  font-family: 'Tiny5', 'Courier New', monospace;
+  font-size: 15px;
   color-scheme: dark;
 }
 
-* {
+.ed * {
   box-sizing: border-box;
 }
 
-html,
 body.editor {
   margin: 0;
   height: 100%;
   overflow: hidden;
   background: #0b0a1c;
-  color: var(--text);
-  font-family: var(--font);
-  font-size: 15px;
 }
 
-body.editor {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
-}
-
-#stage {
+.ed-stage {
   position: relative;
   min-width: 0;
+  min-height: 0;
 }
 
-#view {
+.ed-view {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -43,150 +44,167 @@ body.editor {
   touch-action: none;
 }
 
-#hud {
+.ed-hud {
   position: absolute;
   left: 12px;
   bottom: 12px;
   max-width: calc(100% - 24px);
   padding: 8px 12px;
   background: rgba(26, 28, 44, 0.92);
-  border: 2px solid var(--yellow);
+  border: 2px solid var(--ed-yellow);
   opacity: 0;
   transition: opacity 150ms;
   pointer-events: none;
 }
 
-#hud.show {
+.ed-hud.show {
   opacity: 1;
 }
 
-#hud.bad {
-  border-color: var(--red);
+.ed-hud.bad {
+  border-color: var(--ed-red);
 }
 
-#panel {
+.ed-panel {
   overflow-y: auto;
-  background: var(--panel);
-  border-left: 4px solid var(--ink);
+  background: var(--ed-panel);
+  border-left: 4px solid var(--ed-ink);
   padding: 14px;
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
 
-#panel section {
+.ed-panel section {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-#panel h1,
-#panel h2 {
+.ed-panel h1,
+.ed-panel h2 {
   margin: 0;
   font-weight: 400;
+  text-shadow: none;
 }
 
-#panel h1 {
+.ed-panel h1 {
   font-size: 24px;
-  color: var(--yellow);
+  color: var(--ed-yellow);
 }
 
-#panel h2 {
+.ed-panel h2 {
   font-size: 18px;
-  color: var(--muted);
+  color: var(--ed-muted);
 }
 
-.row {
+.ed-row {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
-.grid2 {
+.ed-grid2 {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 6px 10px;
 }
 
-.field {
+.ed-field {
   display: flex;
   flex-direction: column;
   gap: 3px;
 }
 
-.field span {
-  color: var(--muted);
+.ed-field span {
+  color: var(--ed-muted);
   font-size: 13px;
 }
 
-.check {
+.ed-check {
   display: flex;
   gap: 8px;
   align-items: center;
 }
 
-input,
-select,
-button {
+.ed input,
+.ed select,
+.ed button {
   font: inherit;
-  color: var(--text);
+  color: var(--ed-text);
 }
 
-input[type='number'],
-input[type='text'],
-select {
+.ed input[type='number'],
+.ed input[type='text'],
+.ed select {
   width: 100%;
   min-width: 0;
   padding: 5px 7px;
-  background: var(--ink);
-  border: 2px solid var(--panel-2);
+  background: var(--ed-ink);
+  border: 2px solid var(--ed-panel-2);
 }
 
-input[type='checkbox'] {
+.ed input[type='checkbox'] {
   width: 18px;
   height: 18px;
-  accent-color: var(--yellow);
+  accent-color: var(--ed-yellow);
 }
 
-input:focus-visible,
-select:focus-visible,
-button:focus-visible {
-  outline: 2px solid var(--yellow);
+.ed input:focus-visible,
+.ed select:focus-visible,
+.ed button:focus-visible {
+  outline: 2px solid var(--ed-yellow);
   outline-offset: 1px;
 }
 
-button {
+.ed button {
   padding: 5px 10px;
-  background: var(--panel-2);
-  border: 2px solid var(--ink);
+  background: var(--ed-panel-2);
+  border: 2px solid var(--ed-ink);
   cursor: pointer;
 }
 
-button:hover {
+.ed button:hover {
   filter: brightness(1.2);
 }
 
-button.primary {
-  background: var(--yellow);
-  color: var(--ink);
+.ed button.primary {
+  background: var(--ed-yellow);
+  color: var(--ed-ink);
 }
 
-button.danger {
+.ed button.danger {
   background: #8c2a35;
 }
 
-.hint,
-.help li {
-  color: var(--muted);
+.ed-hint,
+.ed-help li {
+  color: var(--ed-muted);
   font-size: 13px;
   line-height: 1.35;
   margin: 0;
 }
 
-.help ul {
+.ed-draft-status {
+  color: var(--ed-yellow);
+}
+
+.ed-help ul {
   margin: 0;
   padding-left: 16px;
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+/* phones and narrow windows: the map on top, the panel below */
+@media (max-width: 760px) {
+  .ed {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 58fr) minmax(0, 42fr);
+  }
+  .ed-panel {
+    border-left: 0;
+    border-top: 4px solid var(--ed-ink);
+  }
 }

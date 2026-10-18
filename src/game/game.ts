@@ -1,10 +1,12 @@
 // The game shell: fixed 60 Hz simulation, rendering, input, menus, saving, replays.
 
 import { Audio } from '../audio/audio';
+import { createEditor, type EditorHandle } from '../editor/editor';
 import { formatTime, Renderer, snapshot, type Snapshot } from '../render/renderer';
 import { wheelStyle, WHEELS } from '../render/wheels';
-import { getMap, heightOf, MAPS, type MapId } from '../sim/level';
-import { isReplay, mapHash, PHYSICS_VERSION, quantize, type RecordedInput, type Replay } from '../sim/replay';
+import { checkDoc, isCommunityMapId } from '../sim/custom-map';
+import { getMap, heightOf, isBuiltinMap, MAPS, type MapId } from '../sim/level';
+import { isReplay, mapHash, PHYSICS_VERSION, quantize, replayIsCurrent, type RecordedInput, type Replay } from '../sim/replay';
 import { randomSeed } from '../sim/rng';
 import { Sim } from '../sim/sim';
 import type { InputEvent, Mode, SimEvent } from '../sim/types';
@@ -14,9 +16,10 @@ import { Online, type SubmitResult } from './online';
 import { ReplayPlayer, SPEEDS } from './replay-player';
 import { loadSave, runKey, writeSave, ZOOM, type Best, type RunKey, type SaveData, type Settings } from './save';
 import { modeName, UI } from './ui';
+import { UserMaps } from './user-maps';
 
 const TICK = 1 / TICK_RATE;
-type Phase = 'title' | 'playing' | 'paused' | 'won' | 'replay';
+type Phase = 'title' | 'playing' | 'paused' | 'won' | 'replay' | 'editor';
 /** A run with more inputs than this stops recording (it would bloat the save). */
 const MAX_RECORDED = 200_000;
 
@@ -71,12 +74,22 @@ export class Game {
     posting: null,
   };
   private online: Online;
+  /** The player's own maps and the community maps kept here. */
+  private maps: UserMaps;
+  /** The map maker, while it's open. */
+  private editor: EditorHandle | null = null;
+  /** Where quitting the current run goes (the map maker, a community map's page), if not the title. */
+  private runBack: (() => void) | null = null;
+  /** Set during a practice run from the map maker: where it started. It doesn't count for anything. */
+  private practiceAt: { x: number; y: number } | null = null;
   private debug: DebugOptions;
 
   constructor(canvas: HTMLCanvasElement, uiRoot: HTMLElement, debug: DebugOptions) {
     this.canvas = canvas;
     this.debug = debug;
     this.renderer = new Renderer(canvas);
+    // player maps first, so runs on them can be read from the save
+    this.maps = new UserMaps();
     this.save = loadSave();
     // wins from before achievements existed count; no fanfare for those
     if (checkAchievements(this.save).length) writeSave(this.save);
@@ -90,12 +103,12 @@ export class Game {
     this.audio.playMusic(true);
     this.sim = Sim.create('original', 1);
     this.prev = snapshot(this.sim);
-    this.attract = Sim.create('original', 12345, this.save.last?.map ?? 'tower');
+    this.attract = Sim.create('original', 12345, this.attractMap());
     this.attractPrev = snapshot(this.attract);
     this.ui = new UI(uiRoot, {
       play: (map, mode, fresh) => this.play(map, mode, fresh),
       resume: () => this.resume(),
-      restart: () => this.play(this.sim.mapId, this.sim.mode, true),
+      restart: () => this.play(this.sim.mapId, this.sim.mode, true, { back: this.runBack ?? undefined, practiceAt: this.practiceAt ?? undefined }),
       quitToTitle: () => this.quitToTitle(),
       settingsChanged: s => this.applySettings(s),
       toggleFullscreen: () => this.toggleFullscreen(),
@@ -108,6 +121,11 @@ export class Game {
         this.save.wheels = id;
         writeSave(this.save);
       },
+      maps: this.maps,
+      openEditor: id => this.openEditor(id),
+      playMap: (id, mode, fresh, back) => this.play(id, mode, fresh, { back }),
+      draftInfo: id => this.draftInfo(id),
+      uploadDraft: id => this.uploadDraft(id),
     });
     this.bindInput();
     this.renderer.setZoom(ZOOM[this.save.settings.zoom]);
@@ -175,8 +193,14 @@ export class Game {
     return Object.keys(BOT_REPLAYS).length > 0 || Object.values(this.save.replays).some(r => r?.best || r?.last);
   }
 
+  /** The title screen's attract demo runs on the last built-in map played. */
+  private attractMap(): MapId {
+    const m = this.save.last?.map;
+    return m && isBuiltinMap(m) ? m : 'tower';
+  }
+
   private showTitle(): void {
-    const map = this.save.last?.map ?? 'tower';
+    const map = this.attractMap();
     if (this.attract.mapId !== map) {
       this.attract = Sim.create('original', 12345, map);
       this.attractPrev = snapshot(this.attract);
@@ -189,9 +213,15 @@ export class Game {
     this.ui.showTitle(this.save, this.hasReplays());
   }
 
-  private play(map: MapId, mode: Mode, fresh: boolean): void {
+  /**
+   * Start or continue a run. `back` is where quitting it goes (default: the title).
+   * `practiceAt` starts a practice run from that point (map maker only): nothing about it is saved.
+   */
+  private play(map: MapId, mode: Mode, fresh: boolean, opts: { back?: () => void; practiceAt?: { x: number; y: number } } = {}): void {
     const key = runKey(map, mode);
-    const saved = fresh ? undefined : this.save.runs[key];
+    this.runBack = opts.back ?? null;
+    this.practiceAt = opts.practiceAt ?? null;
+    const saved = fresh || this.practiceAt ? undefined : this.save.runs[key];
     if (saved) {
       this.sim = new Sim(structuredClone(saved.state));
       this.recorded = saved.inputs ? saved.inputs.slice() : null;
@@ -199,9 +229,22 @@ export class Game {
       this.sim = Sim.create(mode, randomSeed(), map);
       this.recorded = [];
     }
+    if (this.practiceAt) {
+      const at = this.practiceAt;
+      const s = this.sim.state;
+      s.dude.x = at.x;
+      s.dude.y = at.y;
+      s.airPeakY = at.y;
+      if (s.original) {
+        s.original.hookX = at.x + 14;
+        s.original.hookY = at.y - 20;
+      }
+      this.recorded = null; // a run from partway up can't be replayed
+    } else {
+      this.save.last = { map, mode };
+      if (fresh) delete this.save.runs[key];
+    }
     this.prev = snapshot(this.sim);
-    this.save.last = { map, mode };
-    if (fresh) delete this.save.runs[key];
     this.player = null;
     this.ui.hideReplayBar();
     this.acc = 0;
@@ -222,7 +265,15 @@ export class Game {
     this.phase = 'paused';
     this.canvas.classList.remove('playing');
     this.persist();
-    this.ui.showPause(this.sim.mapId, this.sim.mode, this.save);
+    this.ui.showPause(this.sim.mapId, this.sim.mode, this.save, this.quitLabel());
+  }
+
+  /** What quitting the current run is called. */
+  private quitLabel(): string {
+    const id = this.sim.mapId;
+    if (this.runBack && this.maps.draft(id)) return 'Back to the map maker';
+    if (this.runBack && isCommunityMapId(id)) return 'Back to the map';
+    return 'Quit to title';
   }
 
   private resume(): void {
@@ -236,11 +287,25 @@ export class Game {
 
   private quitToTitle(): void {
     this.persist();
-    this.showTitle();
+    const back = this.runBack;
+    this.runBack = null;
+    this.practiceAt = null;
+    if (!back) return this.showTitle();
+    this.phase = 'title';
+    this.canvas.classList.remove('playing');
+    this.renderer.resetView();
+    back();
   }
 
   private onWin(): void {
     if (this.phase === 'won') return;
+    if (this.practiceAt) {
+      // a practice run: nothing is saved, it just says well done
+      this.phase = 'won';
+      this.canvas.classList.remove('playing');
+      this.winTimer = 1.2;
+      return;
+    }
     const { mapId: map, mode } = this.sim;
     const key = runKey(map, mode);
     const stats = this.sim.state.stats;
@@ -261,15 +326,24 @@ export class Game {
     this.phase = 'won';
     this.canvas.classList.remove('playing');
     this.winTimer = 1.6;
-    // post it straight away; the win screen shows how it went
-    const posting = replay && this.online.session ? this.online.submit(replay) : null;
+    // post it straight away (built-in and community maps); the win screen shows how it went
+    const posting = replay && this.online.session && this.postable(map) ? this.online.submit(replay) : null;
     this.winInfo = { isNewBest, prevBest, replay, unlocked, posting };
+  }
+
+  /** Maps with leaderboards: the built-in ones and community maps (not drafts). */
+  private postable(map: MapId): boolean {
+    return isBuiltinMap(map) || isCommunityMapId(map);
   }
 
   /** The win screen's leaderboard line. */
   private showWinStatus(): void {
     if (!this.online.enabled) return;
     const { replay, posting } = this.winInfo;
+    if (this.maps.draft(this.sim.mapId)) {
+      this.ui.winUpload(this.sim.mapId, () => this.showWinScreen());
+      return;
+    }
     if (!replay) {
       this.ui.setWinStatus('This run wasn’t recorded, so it can’t go on the leaderboard.');
       return;
@@ -303,7 +377,7 @@ export class Game {
   private async postSavedBests(): Promise<void> {
     for (const key of Object.keys(this.save.replays) as RunKey[]) {
       const best = this.save.replays[key]?.best;
-      if (!best || !this.online.session) continue;
+      if (!best || !this.online.session || !this.postable(best.map)) continue;
       const r = await this.online.submit(best);
       if (r.ok && r.improved && r.rank) this.ui.toast(`Posted your best on ${getMap(best.map).name} · ${modeName(best.mode)}`, `#${r.rank} with ${formatTime(best.ticks)}`);
     }
@@ -318,23 +392,108 @@ export class Game {
 
   private showWinScreen(): void {
     const { mapId: map, mode } = this.sim;
+    const back = this.runBack;
+    const opts = { back: back ?? undefined };
+    if (this.practiceAt) {
+      const at = this.practiceAt;
+      this.ui.showPracticeWin(
+        () => this.play(map, mode, true, { ...opts, practiceAt: at }),
+        () => this.quitToTitle(),
+      );
+      return;
+    }
     const replay = this.winInfo.replay;
+    const again = () => this.showWinScreen();
+    const extra: HTMLElement[] = [];
+    // rate a community map you just beat (not your own)
+    const creator = isCommunityMapId(map) ? this.maps.creatorOf(map) : null;
+    if (creator && this.online.enabled && creator !== this.online.session?.user.id) extra.push(this.ui.ratingPicker(map, null, () => undefined, again));
     this.ui.showWin(
       map,
       mode,
       this.sim.state.stats,
       this.winInfo.prevBest,
       this.winInfo.isNewBest,
-      replay ? () => this.watch(replay, `Your run · ${getMap(map).name}, ${modeName(mode)}`, () => this.showTitle()) : null,
-      () => this.play(map, mode, true),
-      () => this.showTitle(),
+      replay ? () => this.watch(replay, `Your run · ${getMap(map).name}, ${modeName(mode)}`, again) : null,
+      () => this.play(map, mode, true, opts),
+      () => (back ? this.quitToTitle() : this.showTitle()),
       this.winInfo.unlocked.map(a => (a.wheels ? `${a.name} · new wheels: ${WHEELS[a.wheels].name}` : a.name)),
+      { backLabel: back ? this.quitLabel() : 'Title', extra },
     );
     this.showWinStatus();
   }
 
+  // ------------------------------------------------------------ the map maker
+
+  private openEditor(id: string): void {
+    const d = this.maps.draft(id);
+    if (!d) return;
+    this.closeEditor();
+    this.phase = 'editor';
+    this.player = null;
+    this.ui.hide();
+    this.ui.hideReplayBar();
+    this.canvas.classList.remove('playing');
+    const myMaps = () => {
+      this.phase = 'title';
+      this.ui.showMyMaps(this.save, () => this.ui.showMaps(this.save));
+    };
+    this.editor = createEditor(document.body, {
+      kind: 'draft',
+      id,
+      doc: structuredClone(d.doc),
+      save: doc => {
+        this.maps.updateDraft(id, doc);
+        // a run in progress was on the old layout
+        delete this.save.runs[runKey(id, 'original')];
+        delete this.save.runs[runKey(id, 'newage')];
+        writeSave(this.save);
+      },
+      play: (doc, at) => {
+        this.closeEditor();
+        this.play(id, doc.mode, true, { back: () => this.openEditor(id), practiceAt: at ?? undefined });
+      },
+      close: () => {
+        this.closeEditor();
+        myMaps();
+      },
+      status: () => this.draftInfo(id).status,
+    });
+  }
+
+  private closeEditor(): void {
+    this.editor?.destroy();
+    this.editor = null;
+  }
+
+  /** A draft's winning run on its current layout (what an upload needs), and a line about where it stands. */
+  private draftInfo(id: string): { run: Replay | null; canUpload: boolean; status: string } {
+    const d = this.maps.draft(id);
+    if (!d) return { run: null, canUpload: false, status: '' };
+    const problem = checkDoc(d.doc);
+    if (problem) return { run: null, canUpload: false, status: problem };
+    const best = this.save.replays[runKey(id, d.doc.mode)]?.best;
+    const run = best && best.won && best.mode === d.doc.mode && replayIsCurrent(best) ? best : null;
+    const sameAsUploaded = !!d.uploaded && d.uploaded.hash === mapHash(getMap(id)) && d.uploaded.mode === d.doc.mode;
+    if (sameAsUploaded) return { run, canUpload: false, status: 'On the community maps.' };
+    if (d.uploaded) return run ? { run, canUpload: true, status: `Changed since you uploaded it. Beaten in ${formatTime(run.ticks)}, so you can upload the new version.` } : { run, canUpload: false, status: 'Changed since you uploaded it. Beat it from the start to upload the new version.' };
+    if (run) return { run, canUpload: true, status: `Beaten in ${formatTime(run.ticks)}. Ready to upload.` };
+    return { run: null, canUpload: false, status: 'Not beaten yet. Beat it with Play from the start, and then you can upload it.' };
+  }
+
+  private async uploadDraft(id: string): Promise<{ ok: true; id: string } | { ok: false; message: string }> {
+    const d = this.maps.draft(id);
+    const info = this.draftInfo(id);
+    if (!d || !info.run) return { ok: false, message: 'Beat your map from the start first.' };
+    const r = await this.online.uploadMap(d.doc, info.run);
+    if (!r.ok) return { ok: false, message: r.message };
+    this.maps.markUploaded(id, r.map.id, mapHash(getMap(id)), d.doc.mode);
+    this.maps.keepCommunity(r.map.id, d.doc, r.map.creator);
+    return { ok: true, id: r.map.id };
+  }
+
   private persist(): void {
-    if ((this.phase === 'playing' || this.phase === 'paused') && !this.sim.state.won) {
+    if ((this.phase === 'playing' || this.phase === 'paused') && !this.sim.state.won && !this.practiceAt) {
       this.save.runs[runKey(this.sim.mapId, this.sim.mode)] = { state: this.sim.state, inputs: this.recorded };
     }
     writeSave(this.save);
@@ -567,7 +726,7 @@ export class Game {
     this.renderer.onEvents(events, this.sim);
     this.audio.onEvents(events);
     for (const e of events) {
-      if (e.type === 'fall') {
+      if (e.type === 'fall' && !this.practiceAt) {
         const m = e.distance / this.sim.map.metersPer;
         this.save.progress.fallen += m;
         this.save.progress.biggestFall = Math.max(this.save.progress.biggestFall, m);
@@ -586,6 +745,12 @@ export class Game {
   }
 
   private frame(now: number): void {
+    // the map maker covers the game and draws itself
+    if (this.phase === 'editor') {
+      this.last = now;
+      requestAnimationFrame(t => this.frame(t));
+      return;
+    }
     // While idle, redraw at about 20 fps instead of the display's full rate: the screen is
     // nearly still, and a full-screen redraw every frame keeps the GPU (and fans) busy.
     if (this.idle() && now - this.last < 1000 / 20) {
@@ -687,6 +852,8 @@ export class Game {
       play: (map: MapId, mode: Mode, fresh = true) => this.play(map, mode, fresh),
       input: (ev: InputEvent) => this.inputs.push(ev),
       maps: () => Object.keys(MAPS),
+      /** The player's drafts (with their upload, if any). */
+      drafts: () => this.maps.drafts.map(d => ({ id: d.id, name: d.doc.name, uploaded: d.uploaded?.id ?? null })),
       replayTick: () => this.player?.tick ?? -1,
       /**
        * Start a run with the route's seed and feed its inputs through the real input path

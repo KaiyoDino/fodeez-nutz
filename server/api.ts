@@ -11,22 +11,26 @@
 //   3. The server reads the player's itch.io profile, makes a session, and parks it under the login id.
 //   4. Meanwhile the game polls /api/auth/poll?lid=<id> and picks the session up (once).
 // The game only ever holds our own session token; the itch.io token is used once and dropped.
+//
+// Community maps (players' own maps, with ratings and difficulty) are in maps.ts.
 
-import { getMap, MAPS, type MapId } from '../src/sim/level';
-import { mapHash, packReplay, PHYSICS_VERSION, unpackReplay, verifyReplay } from '../src/sim/replay';
+import { isCommunityMapId } from '../src/sim/custom-map';
+import { isBuiltinMap, MAP_IDS, type MapId } from '../src/sim/level';
+import { unpackReplay, verifyReplay } from '../src/sim/replay';
 import type { Mode } from '../src/sim/types';
+import { BOARD_SIZE, boardKeys as keys, boardVersion, CORS, fail, json, MODES, putOnBoard, type Entry, type PublicUser } from './common';
+import { createMaps, MAX_COMMUNITY_TICKS } from './maps';
 import type { Store } from './store';
 
-export const BOARD_SIZE = 100;
-/** Longest run the server will check: 10 hours of play (about a minute of CPU). */
+export { BOARD_SIZE, boardVersion, type PublicUser } from './common';
+
+/** Longest run the server will check on a built-in map: 10 hours of play (about a minute of CPU). */
 export const MAX_RUN_TICKS = 10 * 60 * 60 * 60;
 /** Biggest submission accepted, in bytes of JSON. */
 export const MAX_BODY = 3_000_000;
 const SESSION_TTL = 60 * 60 * 24 * 365 * 2;
 const LOGIN_TTL = 15 * 60;
 const SUBMITS_PER_MINUTE = 12;
-/** Tie-break: an earlier submission ranks above a later one with the same time. */
-const EPOCH = Date.UTC(2026, 0, 1);
 
 export interface ItchConfig {
   clientId: string;
@@ -47,52 +51,12 @@ export interface ApiConfig {
   now?: () => number;
 }
 
-export interface PublicUser {
-  id: string;
-  name: string;
-  url?: string;
-}
-
-interface Entry {
-  name: string;
-  url?: string;
-  ticks: number;
-  falls: number;
-  grapples: number;
-  date: string;
-  wheels?: string;
-}
-
-const MODES: readonly Mode[] = ['original', 'newage'];
-
-/** "tower:newage" and friends. Returns null for anything else. */
+/** "tower:newage" and friends (built-in maps only). Returns null for anything else. */
 export function parseLevel(level: string | null): { map: MapId; mode: Mode; level: string } | null {
   const [map, mode] = (level ?? '').split(':');
-  if (!(map in MAPS) || !MODES.includes(mode as Mode)) return null;
-  return { map: map as MapId, mode: mode as Mode, level: `${map}:${mode}` };
+  if (!isBuiltinMap(map) || !MODES.includes(mode as Mode)) return null;
+  return { map, mode: mode as Mode, level: `${map}:${mode}` };
 }
-
-/** A board belongs to one version of the physics and the map; editing either starts a fresh board. */
-export const boardVersion = (map: MapId): string => `${PHYSICS_VERSION}-${mapHash(getMap(map))}`;
-
-const keys = (level: string, version: string) => ({
-  board: `b:${level}:${version}`,
-  entry: (uid: string) => `e:${level}:${version}:${uid}`,
-  replay: (uid: string) => `r:${level}:${version}:${uid}`,
-});
-
-const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Authorization, Content-Type',
-  'Access-Control-Max-Age': '86400',
-};
-
-function json(status: number, body: unknown, extra: Record<string, string> = {}): Response {
-  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...CORS, ...extra } });
-}
-
-const fail = (status: number, error: string, message: string) => json(status, { error, message });
 
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
 
@@ -124,6 +88,18 @@ export function createApi(cfg: ApiConfig): (req: Request) => Promise<Response> {
   const { store } = cfg;
   const now = cfg.now ?? Date.now;
   const fetcher = cfg.fetch ?? fetch;
+  const maps = createMaps({ store, now, userFor: req => userFor(req), adminToken: cfg.adminToken });
+
+  /** A built-in level, or a community map in its one mode (loaded so runs on it can be checked). */
+  async function levelOf(level: string | null): Promise<{ map: MapId; mode: Mode; level: string; community: boolean } | null> {
+    const built = parseLevel(level);
+    if (built) return { ...built, community: false };
+    const [map, mode] = (level ?? '').split(':');
+    if (!isCommunityMapId(map)) return null;
+    const rec = await maps.load(map);
+    if (!rec || rec.doc.mode !== mode) return null;
+    return { map, mode: rec.doc.mode, level: `${map}:${mode}`, community: true };
+  }
 
   async function userFor(req: Request): Promise<PublicUser | null> {
     const m = /^Bearer ([0-9a-f]{64})$/.exec(req.headers.get('Authorization') ?? '');
@@ -212,7 +188,7 @@ export function createApi(cfg: ApiConfig): (req: Request) => Promise<Response> {
   }
 
   async function board(url: URL, req: Request): Promise<Response> {
-    const lv = parseLevel(url.searchParams.get('level'));
+    const lv = await levelOf(url.searchParams.get('level'));
     if (!lv) return fail(400, 'bad-level', 'Unknown level.');
     const version = boardVersion(lv.map);
     const k = keys(lv.level, version);
@@ -234,7 +210,7 @@ export function createApi(cfg: ApiConfig): (req: Request) => Promise<Response> {
   }
 
   async function replay(url: URL): Promise<Response> {
-    const lv = parseLevel(url.searchParams.get('level'));
+    const lv = await levelOf(url.searchParams.get('level'));
     const uid = url.searchParams.get('user') ?? '';
     if (!lv || !/^[a-z]+-[a-z0-9-]{1,40}$/.test(uid)) return fail(400, 'bad-request', 'Unknown level or player.');
     const version = boardVersion(lv.map);
@@ -256,47 +232,46 @@ export function createApi(cfg: ApiConfig): (req: Request) => Promise<Response> {
     } catch {
       return fail(400, 'bad-replay', 'That isn’t a replay.');
     }
+    // a community map has to be loaded before its runs can be read
+    const mapId = (body as { map?: unknown })?.map;
+    if (typeof mapId === 'string' && isCommunityMapId(mapId) && !(await maps.load(mapId))) return fail(404, 'no-map', 'That map has been deleted, so runs on it can’t be posted.');
     const r = unpackReplay(body);
     if (!r) return fail(400, 'bad-replay', 'That isn’t a replay.');
-    const lv = parseLevel(`${r.map}:${r.mode}`)!;
+    const lv = await levelOf(`${r.map}:${r.mode}`);
+    if (!lv) return fail(400, 'bad-level', 'That map isn’t played in that mode.');
     const version = boardVersion(lv.map);
     if (`${r.physics}-${r.mapHash}` !== version) return fail(409, 'outdated', 'This run was played on an older version of the game, so it can’t go on the current board.');
-    if (r.ticks > MAX_RUN_TICKS) return fail(422, 'too-long', 'Runs over 10 hours can’t be posted.');
+    const maxTicks = lv.community ? MAX_COMMUNITY_TICKS : MAX_RUN_TICKS;
+    if (r.ticks > maxTicks) return fail(422, 'too-long', `Runs over ${maxTicks / 216000} hours can’t be posted.`);
     if (r.inputs.some(i => i.kind === 'teleport')) return fail(422, 'teleport', 'Runs that used debug teleports can’t be posted.');
     if (r.inputs.length && r.inputs[r.inputs.length - 1].tick > r.ticks) return fail(422, 'bad-replay', 'That replay doesn’t add up.');
 
     const k = keys(lv.level, version);
     const rank = async () => ((await store.zrank(k.board, user.id)) ?? -1) + 1;
+    // A player's first win on a community map counts towards its difficulty, top 100 or not.
+    const firstClear = lv.community && (await maps.needsClear(lv.map, user));
     // Cheap checks first: is it a personal best, and would it make the top 100?
     const current = await store.zscore(k.board, user.id);
-    if (current !== null && Math.floor(current) <= r.ticks) return json(200, { ok: true, improved: false, rank: await rank(), ticks: Math.floor(current) });
-    if (current === null && (await store.zcard(k.board)) >= BOARD_SIZE) {
+    let notBetter: Record<string, unknown> | null = null;
+    if (current !== null && Math.floor(current) <= r.ticks) notBetter = { ok: true, improved: false, rank: await rank(), ticks: Math.floor(current) };
+    else if (current === null && (await store.zcard(k.board)) >= BOARD_SIZE) {
       const [last] = await store.zrange(k.board, BOARD_SIZE - 1, BOARD_SIZE - 1);
-      if (last && Math.floor(last.score) <= r.ticks) return json(200, { ok: true, improved: false, rank: null, cutoff: Math.floor(last.score) });
+      if (last && Math.floor(last.score) <= r.ticks) notBetter = { ok: true, improved: false, rank: null, cutoff: Math.floor(last.score) };
     }
+    if (notBetter && !firstClear) return json(200, notBetter);
 
     const check = verifyReplay(r);
     if (!check.won || check.ticks !== r.ticks) return fail(422, 'did-not-win', 'That replay doesn’t win the level in that time, so it wasn’t posted.');
+    if (firstClear) await maps.countClear(lv.map, user, r.ticks);
+    if (notBetter) return json(200, notBetter);
 
-    const stats = check.state.stats;
-    const entry: Entry = { name: user.name, url: user.url, ticks: r.ticks, falls: stats.falls, grapples: stats.grapples, date: new Date(now()).toISOString() };
-    if (r.wheels) entry.wheels = r.wheels;
-    await store.set(k.entry(user.id), JSON.stringify(entry));
-    await store.set(k.replay(user.id), JSON.stringify(packReplay({ ...r, date: entry.date, stats: { ...stats } })));
-    await store.zadd(k.board, r.ticks + (now() - EPOCH) / 1e13, user.id);
-    // keep the board at 100: whoever got pushed off loses their entry and replay
-    const off = await store.zrange(k.board, BOARD_SIZE, -1);
-    if (off.length) {
-      await store.zrem(k.board, ...off.map(o => o.member));
-      await store.del(...off.flatMap(o => [k.entry(o.member), k.replay(o.member)]));
-    }
-    const place = await rank();
-    return json(200, { ok: true, improved: true, rank: place || null, ticks: r.ticks });
+    const place = await putOnBoard(store, lv.level, version, user, r, check.state.stats, now());
+    return json(200, { ok: true, improved: true, rank: place, ticks: r.ticks });
   }
 
   async function adminRemove(url: URL, req: Request): Promise<Response> {
     if (!cfg.adminToken || req.headers.get('Authorization') !== `Bearer ${cfg.adminToken}`) return fail(404, 'not-found', 'No such endpoint.');
-    const lv = parseLevel(url.searchParams.get('level'));
+    const lv = await levelOf(url.searchParams.get('level'));
     const uid = url.searchParams.get('user') ?? '';
     if (!uid) return fail(400, 'bad-request', 'Which player?');
     if (lv) {
@@ -314,7 +289,7 @@ export function createApi(cfg: ApiConfig): (req: Request) => Promise<Response> {
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
     try {
       if (req.method === 'GET') {
-        if (path === '/api/health') return json(200, { ok: true, signIn: !!cfg.itch || !!cfg.devLogin, boards: Object.fromEntries((Object.keys(MAPS) as MapId[]).map(m => [m, boardVersion(m)])) });
+        if (path === '/api/health') return json(200, { ok: true, signIn: !!cfg.itch || !!cfg.devLogin, boards: Object.fromEntries(MAP_IDS.map(m => [m, boardVersion(m)])) });
         if (path === '/api/auth/start') return await authStart(url);
         if (path === '/api/auth/callback') return await authCallback(url);
         if (path === '/api/auth/poll') {
@@ -329,6 +304,9 @@ export function createApi(cfg: ApiConfig): (req: Request) => Promise<Response> {
         }
         if (path === '/api/board') return await board(url, req);
         if (path === '/api/replay') return await replay(url);
+        if (path === '/api/maps') return await maps.list(url);
+        if (path === '/api/maps/get') return await maps.get(url, req);
+        if (path === '/api/maps/mine') return await maps.mine(req);
       }
       if (req.method === 'POST') {
         if (path === '/api/auth/dev-login') return await devLogin(req);
@@ -339,6 +317,9 @@ export function createApi(cfg: ApiConfig): (req: Request) => Promise<Response> {
         }
         if (path === '/api/submit') return await submit(req);
         if (path === '/api/admin/remove') return await adminRemove(url, req);
+        if (path === '/api/maps/upload') return await maps.upload(req);
+        if (path === '/api/maps/rate') return await maps.rate(req);
+        if (path === '/api/maps/delete') return await maps.remove(url, req);
       }
       return fail(404, 'not-found', 'No such endpoint.');
     } catch (e) {

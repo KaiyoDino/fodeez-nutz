@@ -107,6 +107,20 @@ Setting it up, and publishing on itch.io: see [docs/publishing.md](docs/publishi
 
 Beating a level unlocks a set of wheels for the chair: Girder (The Tower, Original), Neon (The Tower, New Age), Hazard (The Crane, Original) and Goop (The Crane, New Age). Gold comes with the last achievement. Pick them on the Achievements screen. Your wheels are saved in your replays, so other players see them when they watch your runs. Wins from before achievements existed count.
 
+## The map maker and community maps
+
+**Play → Map maker** opens the level editor inside the game, for players' own maps (`src/editor/editor.ts`; it's the same editor as the dev one below). A new map starts as a small climb with a goal on top; you can also start from a copy of The Tower or The Crane. Name it, pick the mode it's played in and the sky, change its size, and add girders, targets, goop, springs, bumpers and goals. Changes are saved on the device as you make them (`src/game/user-maps.ts`). **Test here** is a practice run from the selected piece, and it doesn't count for anything. **Play from the start** is a real run.
+
+**Uploading** needs a win: once you've beaten your map from the start, in its mode, on its current layout, it can go on the community maps (from the win screen or the map maker list). The server replays that run on the uploaded map and refuses the map if the run doesn't win (`server/maps.ts`), so every community map is known to be beatable. Change the map after winning and you have to beat it again. Uploaded maps don't change. To fix one, the creator deletes it from its page and uploads the new version.
+
+**Play → Community maps** lists them by top rated (ranked as if every map started with two 3-star ratings, so one vote doesn't top the list), newest, or most beaten. Each map has:
+
+- **a rating:** 1 to 5 stars, one rating per signed-in player (changing it replaces it). You can't rate your own map.
+- **a difficulty:** from the average time other players took to beat it the first time (the creator's runs don't count). Under 1 minute is Easy, under 5 Medium, under 20 Hard, and 20 or more Brutal. Until someone else beats it, it's unknown, and the creator's time is shown instead.
+- **a leaderboard** with replays, like the built-in levels. The creator's winning run is on it.
+
+The shared map format and its limits (up to 400 pieces, 800–6000 wide and 1000–20000 tall, no map tricks or pieces for one mode only) are in `src/sim/custom-map.ts`, used by both the game and the server. Runs on community maps can be up to 4 hours long, since a big map costs about 0.6 s of server CPU per minute of play to check. Community maps you've played are kept on your device, so a run in progress on one survives closing the game.
+
 ## What was fixed from 2023 (both modes)
 
 - **Falling through platforms at high speed.** Movement is now checked along the whole path.
@@ -151,6 +165,8 @@ npm run typecheck
 
 **Route finder.** `tests/route-finder.ts` is a bot that searches for a winning route with a beam search over "aim at a target, hold N ticks, let go" moves. It's held to human limits: at least 0.2 s between letting go and the next shot, every press held at least 0.1 s, and every move must still work when it's done a little worse (pressed 2 ticks early or late, held 3 ticks longer or shorter, aimed 6 px off). A move that only works frame-perfectly is scored by its worst version, so the search avoids it. `FIND_ROUTE=tower-newage npm run route` finds a route (also `FIND_ROUTE=crane` for both modes, or `FIND_ROUTE=all`) and saves it to `src/data/routes/`. Those files are the bot replays in the game, and `npm test` replays them, so any physics or map change that makes a map unbeatable fails the tests.
 
+**Starter map.** `STARTER=1 npx vitest run tests/_starter.test.ts` has the bot beat the map maker's starter map in both modes and saves the runs to `tests/fixtures/`. The community map tests use them as the creator's winning run, so rerun it if the starter map changes.
+
 **Section checks.** `SECTIONS=crane-newage npx vitest run tests/_sections.test.ts` runs the bot on each section separately (from a teleport point to the next section; `SECTIONS=tower-original` works too) and writes `tests/_sections_<map>-<mode>.txt`. Much faster than a full route when tuning one part of a map.
 
 **Move windows.** `MOVES=crane-newage npx vitest run tests/_moves.test.ts` measures how forgiving each designed move of the Crane is: it rolls the dude back and forth on the ledge (or lets him slide down the goop, or bounce) and tries the shot on every tick, holding until the rope lets go. It reports the widest window of time in which the shot works; about 150 ms is comfortable, under 50 ms is hard. `TUNE="garden 3"` tries the move's target all around its current spot and lists the positions with the widest windows. That's how the Crane's targets were placed. `FEEL=new npx vitest run tests/_feel.test.ts` measures single grapples in both modes (rolling along, a target at various offsets, hold until the rope lets go): how long the pull takes, how fast you leave, and where you come down.
@@ -176,11 +192,11 @@ src/data/      the bot's winning routes (shown as replays in the game)
 src/render/    pixel-art renderer: palette, bitmap font, sprites, level art, sky, particles, camera, HUD
 src/audio/     synthesized sound effects and music (Web Audio)
 src/game/      game loop, input, menus, saving, achievements, the leaderboard client
-src/editor/    the level editor (dev server only) and the code it writes into the map files
+src/editor/    the level editor (the dev page for the built-in maps, and the map maker in the game) and the code it writes into the map files
 tests/         unit tests, the route-finder bot, section checks, move windows
 tools/         screenshot and performance scripts, the editor's save endpoint, the map overview page
 e2e/           browser tests
-server/        the leaderboard server: itch.io sign-in, boards, replay checking (Vercel Function)
+server/        the leaderboard server: itch.io sign-in, boards, replay checking, community maps (Vercel Function)
 docs/          publishing on itch.io and setting up the leaderboards
 ```
 

@@ -3,7 +3,7 @@
 // simulation on the same ticks.
 
 import type { MapDef, MapId } from './map-types';
-import { getMap, MAPS } from './maps';
+import { getMap, hasMap } from './maps';
 import { Sim, type SimState } from './sim';
 import type { InputEvent, Mode, SimEvent, Stats } from './types';
 
@@ -122,7 +122,7 @@ export function verifyReplay(replay: Replay): { won: boolean; ticks: number; sta
 export function isReplay(raw: unknown): raw is Replay {
   if (!raw || typeof raw !== 'object') return false;
   const r = raw as Replay;
-  return r.v === 1 && r.map in MAPS && (r.mode === 'original' || r.mode === 'newage') && typeof r.seed === 'number' && Array.isArray(r.inputs) && typeof r.ticks === 'number';
+  return r.v === 1 && hasMap(r.map) && (r.mode === 'original' || r.mode === 'newage') && typeof r.seed === 'number' && Array.isArray(r.inputs) && typeof r.ticks === 'number';
 }
 
 /**
@@ -168,7 +168,7 @@ const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFin
 export function unpackReplay(raw: unknown, by: Replay['by'] = 'player'): Replay | null {
   if (!raw || typeof raw !== 'object') return null;
   const p = raw as PackedReplay;
-  if (p.v !== 1 || !(p.map in MAPS) || (p.mode !== 'original' && p.mode !== 'newage')) return null;
+  if (p.v !== 1 || !hasMap(p.map) || (p.mode !== 'original' && p.mode !== 'newage')) return null;
   if (!isInt(p.seed) || !isInt(p.ticks) || p.ticks < 0 || !isInt(p.physics) || typeof p.mapHash !== 'string') return null;
   if (!Array.isArray(p.i) || p.i.length % 4 !== 0) return null;
   const inputs: RecordedInput[] = [];

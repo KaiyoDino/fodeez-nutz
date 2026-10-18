@@ -2,7 +2,10 @@
 
 import type { Mode } from './types';
 
-export type MapId = 'tower' | 'crane';
+/** The maps that ship with the game. */
+export type BuiltinMapId = 'tower' | 'crane';
+/** A built-in map, a player's draft ("draft-..."), or a community map ("c-..."). */
+export type MapId = string;
 
 export type PlatformKind = 'girder' | 'spring' | 'goop' | 'target' | 'goal';
 

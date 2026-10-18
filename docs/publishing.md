@@ -16,7 +16,7 @@ If the tests fail, nothing is uploaded. Everything below is free:
 |---|---|---|
 | itch.io | hosts the game page | Free to publish. itch.io only takes a share of money you make, and you pick the share (default 10%, can be 0%). A free game pays nothing. |
 | Vercel (Hobby) | runs the leaderboard server (and a copy of the game) | Free for non-commercial projects. About 4 hours of CPU a month, which is enough to check a few thousand 30-minute runs. |
-| Upstash Redis | stores boards, replays and sign-ins | 256 MB and 500,000 commands a month. Showing a board is about 3 commands, posting a run about 10. |
+| Upstash Redis | stores boards, replays, sign-ins and community maps | 256 MB and 500,000 commands a month. Showing a board is about 3 commands, posting a run about 10. A community map takes up to about 50 KB. |
 | GitHub Actions | tests and uploads to itch.io | Free for public repositories (2,000 minutes a month for private ones; a run takes about 2). |
 
 The setup takes about half an hour, once. After that, updating is just `git push`.
@@ -72,7 +72,16 @@ curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
   "https://<your-vercel-address>/api/admin/remove?level=crane:newage&user=itch-12345&ban=1"
 ```
 
-The `user` id is in the board's data at `https://<your-vercel-address>/api/board?level=crane:newage`.
+The `user` id is in the board's data at `https://<your-vercel-address>/api/board?level=crane:newage`. A ban also stops that account uploading maps.
+
+Community maps can't be uploaded unless the creator's own winning run checks out on them, but anything else about a map (its name, say) isn't checked. To take a map down:
+
+```bash
+curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "https://<your-vercel-address>/api/maps/delete?id=c-abcdefghij"
+```
+
+The map's id is in the list at `https://<your-vercel-address>/api/maps?sort=new`. Each player can upload 20 maps a day.
 
 ## Trying it locally
 

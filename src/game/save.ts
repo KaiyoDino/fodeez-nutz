@@ -2,7 +2,7 @@
 // Every read and write is guarded: private windows or blocked storage just mean nothing is remembered.
 
 import { isWheelId, type WheelId } from '../render/wheels';
-import { MAPS, type MapId } from '../sim/level';
+import { hasMap, MAPS, type MapId } from '../sim/level';
 import { isReplay, type RecordedInput, type Replay } from '../sim/replay';
 import { loadSimState, type SimState } from '../sim/sim';
 import type { Mode } from '../sim/types';
@@ -83,7 +83,7 @@ function empty(): SaveData {
 
 const MODES: Mode[] = ['original', 'newage'];
 const isMode = (m: unknown): m is Mode => m === 'original' || m === 'newage';
-const isMap = (m: unknown): m is MapId => typeof m === 'string' && m in MAPS;
+const isMap = hasMap;
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 
 function readSettings(raw: Partial<Settings> | undefined): Settings {

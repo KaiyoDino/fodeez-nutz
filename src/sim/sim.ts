@@ -1,4 +1,4 @@
-import { DUDE, getMap, heightOf, MAPS, type MapDef, type MapId } from './level';
+import { DUDE, getMap, hasMap, heightOf, MAPS, type MapDef, type MapId } from './level';
 import { applyNewAgeInput, handOf, newNewAgeState, stepNewAge, type NewAgeState } from './newage';
 import { applyOriginalInput, HOOK_SIZE, newOriginalState, resetHook, stepOriginal, type OriginalState } from './original';
 import type { DudeState, DudeView, HookView, InputEvent, Mode, SimEvent, Stats } from './types';
@@ -65,7 +65,7 @@ export function loadSimState(raw: unknown): SimState | null {
   if ((s.v !== SAVE_VERSION && s.v !== 1) || (s.mode !== 'original' && s.mode !== 'newage')) return null;
   if (!s.dude || !s.world || !s.stats || !Array.isArray(s.world.platX) || s.world.mode !== s.mode) return null;
   migrate(s);
-  if (!(s.world.map in MAPS)) return null;
+  if (!hasMap(s.world.map)) return null;
   // a save from a different version of the map can't be resumed
   const count = MAPS[s.world.map].platforms.length;
   if (s.world.platX.length !== count || s.world.platDx.length !== count) return null;

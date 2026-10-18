@@ -17,6 +17,8 @@ export interface Store {
   mget(keys: string[]): Promise<(string | null)[]>;
   /** Add 1 and return the new count. The key expires `ttl` seconds after it's first created. */
   incr(key: string, ttl: number): Promise<number>;
+  /** Add n (which can be negative) to a counter that never expires, and return the new value. */
+  incrby(key: string, n: number): Promise<number>;
   zadd(key: string, score: number, member: string): Promise<void>;
   zscore(key: string, member: string): Promise<number | null>;
   /** 0-based position from the lowest score, or null. */
@@ -83,6 +85,12 @@ export class MemoryStore implements Store {
     const v = Number(this.live(key) ?? 0) + 1;
     const e = this.kv.get(key);
     this.kv.set(key, { value: String(v), expires: e?.expires || this.now() + ttl * 1000 });
+    return v;
+  }
+
+  async incrby(key: string, n: number) {
+    const v = Number(this.live(key) ?? 0) + n;
+    this.kv.set(key, { value: String(v), expires: 0 });
     return v;
   }
 
@@ -164,6 +172,10 @@ export class UpstashStore implements Store {
     const v = await this.cmd<number>('INCR', key);
     if (v === 1) await this.cmd('EXPIRE', key, ttl);
     return v;
+  }
+
+  async incrby(key: string, n: number) {
+    return this.cmd<number>('INCRBY', key, Math.round(n));
   }
 
   async zadd(key: string, score: number, member: string) {

@@ -2,7 +2,7 @@
 // resolution (1 px = 2 world units), upscaled by a whole number with no smoothing, then
 // smoothed down to the exact window size ("sharp bilinear") so pixels stay even.
 
-import { DUDE, heightOf, TOWER, type MapDef, type MapId } from '../sim/level';
+import { DUDE, heightOf, TOWER, type MapDef } from '../sim/level';
 import { handOf, NA, nearHand } from '../sim/newage';
 import { HOOK_RANGE, HOOK_SIZE } from '../sim/original';
 import type { Sim } from '../sim/sim';
@@ -81,7 +81,8 @@ export class Renderer {
   private zoom = 1;
   private cssSize = { w: 960, h: 540, dpr: 1 };
 
-  private platformArt = new Map<string, HTMLCanvasElement>();
+  /** Per map (by object, so an edited map gets fresh art), per platform index. */
+  private platformArt = new WeakMap<MapDef, Map<number, HTMLCanvasElement>>();
   /** The map being drawn (taken from the simulation each frame). */
   private map: MapDef = TOWER;
 
@@ -114,23 +115,24 @@ export class Renderer {
 
   /** Pre-rendered art for platforms that are drawn every frame (movers, map tricks, mode-only goop). */
   private artFor(i: number): HTMLCanvasElement | undefined {
-    const key = `${this.map.id}:${i}`;
-    let art = this.platformArt.get(key);
+    let cache = this.platformArt.get(this.map);
+    if (!cache) this.platformArt.set(this.map, (cache = new Map()));
+    let art = cache.get(i);
     if (!art) {
       const def = this.map.platforms[i];
       if (def.kind === 'girder' && (def.mover || def.role)) art = girderCanvas(def);
       else if (def.kind === 'goop' && (def.mover || def.onlyIn)) art = goopCanvas(def);
-      if (art) this.platformArt.set(key, art);
+      if (art) cache.set(i, art);
     }
     return art;
   }
 
-  private staticLayers = new Map<MapId, HTMLCanvasElement>();
+  private staticLayers = new WeakMap<MapDef, HTMLCanvasElement>();
   private staticFor(): HTMLCanvasElement {
-    let c = this.staticLayers.get(this.map.id);
+    let c = this.staticLayers.get(this.map);
     if (!c) {
       c = buildStaticLayer(this.map).canvas;
-      this.staticLayers.set(this.map.id, c);
+      this.staticLayers.set(this.map, c);
     }
     return c;
   }
