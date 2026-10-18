@@ -4,6 +4,7 @@
 
 import { P } from './palette';
 import { dot, makeCanvas, type Ctx } from './px';
+import { WHEELS, type WheelStyle } from './wheels';
 
 const KEY: Record<string, string> = {
   P: P.y1, O: P.o1, o: P.o0, H: P.hair, S: P.skin, s: P.skinS, E: P.ink, B: P.b1, b: P.b0, L: P.b2,
@@ -57,6 +58,8 @@ export interface DudePose {
   stuck: boolean;
   /** Seconds, for little animations. */
   t: number;
+  /** Which wheels he has on (default: standard). */
+  wheels?: WheelStyle;
 }
 
 /** Local (facing-right) arm angle for a world-space aim angle. */
@@ -80,19 +83,23 @@ export function buildDude(pose: DudePose): HTMLCanvasElement {
     }
   };
 
-  // wheel: tire, rim, three spokes through the hub
+  // wheel: tire (with tread segments that turn with it), rim, spokes through the hub
+  const w = pose.wheels ?? WHEELS.standard;
+  const TREAD = 10;
   for (let y = 0; y < SPRITE_H; y++)
     for (let x = 0; x < SPRITE_W; x++) {
       const d = Math.hypot(x - WHEEL.x, y - WHEEL.y);
       if (d < WHEEL.r) mask[y][x] = true;
-      if (d >= 5.3 && d < WHEEL.r) grid[y][x] = P.s0;
-      else if (d >= 3.5 && d < 4.4) grid[y][x] = P.s3;
+      if (d >= 5.3 && d < WHEEL.r) {
+        const seg = Math.floor((((Math.atan2(y - WHEEL.y, x - WHEEL.x) - pose.wheel) / (2 * Math.PI)) % 1 + 1) * TREAD) % 2;
+        grid[y][x] = w.tread && seg ? w.tread : w.tire;
+      } else if (d >= 3.5 && d < 4.4) grid[y][x] = w.rim;
     }
-  for (let k = 0; k < 3; k++) {
-    const a = pose.wheel + (k * Math.PI) / 3;
-    for (let r = -3; r <= 3; r++) if (r) set(WHEEL.x + Math.cos(a) * r, WHEEL.y + Math.sin(a) * r, P.s2);
+  for (let k = 0; k < w.spokes; k++) {
+    const a = pose.wheel + (k * Math.PI) / w.spokes;
+    for (let r = -3; r <= 3; r++) if (r) set(WHEEL.x + Math.cos(a) * r, WHEEL.y + Math.sin(a) * r, w.spoke);
   }
-  set(WHEEL.x, WHEEL.y, P.y1);
+  set(WHEEL.x, WHEEL.y, w.hub);
 
   // the arm goes behind the head: never paint over head pixels
   const arm = (x: number, y: number, c: string) => {

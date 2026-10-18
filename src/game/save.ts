@@ -1,10 +1,12 @@
 // Settings, the run in progress for each map and mode, best times and replays, in localStorage.
 // Every read and write is guarded: private windows or blocked storage just mean nothing is remembered.
 
+import { isWheelId, type WheelId } from '../render/wheels';
 import { MAPS, type MapId } from '../sim/level';
 import { isReplay, type RecordedInput, type Replay } from '../sim/replay';
 import { loadSimState, type SimState } from '../sim/sim';
 import type { Mode } from '../sim/types';
+import { readSession, type Session } from './online';
 
 const KEY = 'fodeez-nutz/v1';
 
@@ -48,6 +50,21 @@ export interface SaveData {
   /** Your fastest win and your most recent win, per map and mode. */
   replays: Partial<Record<RunKey, { best?: Replay; last?: Replay }>>;
   last: { map: MapId; mode: Mode } | null;
+  /** Achievements earned and the running totals they need. */
+  progress: Progress;
+  /** The wheels he has on. */
+  wheels: WheelId;
+  /** Signed in to the leaderboards. */
+  online: Session | null;
+}
+
+export interface Progress {
+  /** Achievement id to the date it was earned. */
+  unlocked: Record<string, string>;
+  /** Metres fallen in total, over every fall of 30 m or more. */
+  fallen: number;
+  /** The biggest single fall, in metres. */
+  biggestFall: number;
 }
 
 const prefersReducedMotion = (): boolean => {
@@ -61,7 +78,7 @@ const prefersReducedMotion = (): boolean => {
 export const DEFAULT_SETTINGS: Settings = { music: 0.6, sfx: 0.8, shake: !prefersReducedMotion(), aimGuide: true, showTimer: true, cursor: 'medium', zoom: 'normal' };
 
 function empty(): SaveData {
-  return { v: 2, settings: { ...DEFAULT_SETTINGS }, runs: {}, best: {}, wins: {}, replays: {}, last: null };
+  return { v: 2, settings: { ...DEFAULT_SETTINGS }, runs: {}, best: {}, wins: {}, replays: {}, last: null, progress: { unlocked: {}, fallen: 0, biggestFall: 0 }, wheels: 'standard', online: null };
 }
 
 const MODES: Mode[] = ['original', 'newage'];
@@ -91,6 +108,14 @@ function readRun(raw: unknown, key: RunKey): SavedRun | undefined {
   return { state, inputs };
 }
 
+function readProgress(raw: unknown): Progress {
+  const p = (raw && typeof raw === 'object' ? raw : {}) as Partial<Progress>;
+  const unlocked: Record<string, string> = {};
+  if (p.unlocked && typeof p.unlocked === 'object') for (const [k, v] of Object.entries(p.unlocked)) if (typeof v === 'string') unlocked[k] = v;
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0);
+  return { unlocked, fallen: num(p.fallen), biggestFall: num(p.biggestFall) };
+}
+
 const isBest = (b: unknown): b is Best => !!b && typeof (b as Best).ticks === 'number';
 
 /** The first version stored one run per mode on the tower, with no replays. */
@@ -115,6 +140,9 @@ export function loadSave(): SaveData {
     if (!raw) return data;
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     data.settings = readSettings(parsed.settings as Partial<Settings> | undefined);
+    data.progress = readProgress(parsed.progress);
+    if (isWheelId(parsed.wheels)) data.wheels = parsed.wheels;
+    data.online = readSession(parsed.online);
     if (parsed.v !== 2) {
       migrateV1(parsed, data);
       return data;

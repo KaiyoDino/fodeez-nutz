@@ -15,6 +15,7 @@ import { drawText, drawTextOutlined, textWidth } from './font';
 import { BEACONS, buildStaticLayer, drawGoopLife, drawSpring, girderCanvas, goopCanvas, SCALE, targetSprite, toPx, worldPx } from './level-art';
 import { P } from './palette';
 import { Particles } from './particles';
+import type { WheelStyle } from './wheels';
 import { ctx2d, dot, line, makeCanvas, rect, type Ctx } from './px';
 
 /** Positions from the previous tick, for interpolation. */
@@ -50,6 +51,8 @@ export interface FrameInput {
   replay?: { speed: number; paused: boolean } | null;
   /** Crosshair size. */
   cursor: 'small' | 'medium' | 'large';
+  /** The dude's wheels. */
+  wheels?: WheelStyle;
 }
 
 interface Message {
@@ -429,7 +432,7 @@ export class Renderer {
       } else this.retract = null;
     }
 
-    const pose: DudePose = { facing, wheel: this.wheel, aim, loaded: hook.state === 'idle' && !this.retract, stuck: view.stuck, t: f.t };
+    const pose: DudePose = { facing, wheel: this.wheel, aim, loaded: hook.state === 'idle' && !this.retract, stuck: view.stuck, t: f.t, wheels: f.wheels };
     let tilt = 0;
     if (s.won) tilt = Math.min(0.32, (f.t - this.won) * 1.2) * (0.85 + 0.15 * Math.sin(f.t * 6));
     const sq = this.squash > 0 ? 1 : 0;

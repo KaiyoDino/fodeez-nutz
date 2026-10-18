@@ -31,6 +31,8 @@ export interface Replay {
   physics?: number;
   /** Fingerprint of the map's layout when it was recorded (see mapHash). */
   mapHash?: string;
+  /** The wheels the player had on (cosmetic only). */
+  wheels?: string;
 }
 
 /** Bumped whenever a physics change would make old replays play out differently. 2: New Age's pull-and-fling rope. */
@@ -121,4 +123,65 @@ export function isReplay(raw: unknown): raw is Replay {
   if (!raw || typeof raw !== 'object') return false;
   const r = raw as Replay;
   return r.v === 1 && r.map in MAPS && (r.mode === 'original' || r.mode === 'newage') && typeof r.seed === 'number' && Array.isArray(r.inputs) && typeof r.ticks === 'number';
+}
+
+/**
+ * The compact form a replay travels in to and from the leaderboard server: the inputs are
+ * flattened into one array of [tick delta, kind (0 press, 1 release, 2 teleport), x, y, ...].
+ * A long human run is a few thousand inputs, so this keeps it well under a megabyte.
+ */
+export interface PackedReplay {
+  v: 1;
+  map: MapId;
+  mode: Mode;
+  seed: number;
+  ticks: number;
+  physics: number;
+  mapHash: string;
+  date?: string;
+  wheels?: string;
+  /** Filled in by the server from its own replay of the run. */
+  stats?: Stats;
+  i: number[];
+}
+
+const KINDS = ['press', 'release', 'teleport'] as const;
+
+export function packReplay(r: Replay): PackedReplay {
+  const i: number[] = [];
+  let t = 0;
+  for (const e of r.inputs) {
+    i.push(e.tick - t, KINDS.indexOf(e.kind), e.x, e.y);
+    t = e.tick;
+  }
+  const p: PackedReplay = { v: 1, map: r.map, mode: r.mode, seed: r.seed, ticks: r.ticks, physics: r.physics ?? 1, mapHash: r.mapHash ?? '', i };
+  if (r.date) p.date = r.date;
+  if (r.wheels) p.wheels = r.wheels;
+  if (r.stats) p.stats = r.stats;
+  return p;
+}
+
+const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v);
+const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+
+/** Checks the shape of a packed replay (from the network) and expands it. Null if it's malformed. */
+export function unpackReplay(raw: unknown, by: Replay['by'] = 'player'): Replay | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const p = raw as PackedReplay;
+  if (p.v !== 1 || !(p.map in MAPS) || (p.mode !== 'original' && p.mode !== 'newage')) return null;
+  if (!isInt(p.seed) || !isInt(p.ticks) || p.ticks < 0 || !isInt(p.physics) || typeof p.mapHash !== 'string') return null;
+  if (!Array.isArray(p.i) || p.i.length % 4 !== 0) return null;
+  const inputs: RecordedInput[] = [];
+  let t = 0;
+  for (let k = 0; k < p.i.length; k += 4) {
+    const [dt, kind, x, y] = [p.i[k], p.i[k + 1], p.i[k + 2], p.i[k + 3]];
+    if (!isInt(dt) || dt < 0 || !isInt(kind) || kind < 0 || kind > 2 || !isNum(x) || !isNum(y)) return null;
+    t += dt;
+    inputs.push({ tick: t, kind: KINDS[kind], x, y });
+  }
+  const r: Replay = { v: 1, map: p.map, mode: p.mode, seed: p.seed, inputs, ticks: p.ticks, won: true, by, physics: p.physics, mapHash: p.mapHash };
+  if (typeof p.date === 'string') r.date = p.date.slice(0, 40);
+  if (typeof p.wheels === 'string' && /^[a-z]{1,16}$/.test(p.wheels)) r.wheels = p.wheels;
+  if (p.stats && typeof p.stats === 'object' && typeof p.stats.ticks === 'number') r.stats = p.stats;
+  return r;
 }

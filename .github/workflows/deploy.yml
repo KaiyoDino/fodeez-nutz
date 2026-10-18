@@ -1,0 +1,66 @@
+# On every push: typecheck and run the tests. On main, also upload the build to itch.io.
+# (Vercel deploys the web copy and the leaderboard server by itself from the same push.)
+#
+# To turn on the itch.io upload, in GitHub: Settings > Secrets and variables > Actions
+#   secret   BUTLER_API_KEY  an itch.io API key (https://itch.io/user/settings/api-keys)
+#   variable ITCH_GAME       your game on itch.io as user/game, e.g. kaiyodino/fodeez-nutz
+#   variable API_URL         the leaderboard server, e.g. https://fodeez-nutz.vercel.app
+name: Test and deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  itch:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+      ITCH_GAME: ${{ vars.ITCH_GAME }}
+      VITE_API_URL: ${{ vars.API_URL }}
+    steps:
+      - name: Check the itch.io settings
+        id: setup
+        run: |
+          if [ -z "$BUTLER_API_KEY" ] || [ -z "$ITCH_GAME" ]; then
+            echo "::notice::Not uploading to itch.io: add the BUTLER_API_KEY secret and the ITCH_GAME variable to turn it on."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+          if [ -z "$VITE_API_URL" ]; then echo "::warning::API_URL isn't set, so the itch.io build has no leaderboards."; fi
+      - if: steps.setup.outputs.enabled == 'true'
+        uses: actions/checkout@v5
+      - if: steps.setup.outputs.enabled == 'true'
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - if: steps.setup.outputs.enabled == 'true'
+        run: npm ci && npm run build
+      - name: Upload to itch.io
+        if: steps.setup.outputs.enabled == 'true'
+        run: |
+          curl -sSfL -o butler.zip https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default
+          unzip -q butler.zip -d butler && chmod +x butler/butler
+          ./butler/butler push dist "$ITCH_GAME:html5" --userversion "$(date -u +%Y.%m.%d)-${GITHUB_SHA::7}"

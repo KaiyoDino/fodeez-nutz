@@ -13,6 +13,8 @@ npm run dev        # http://localhost:5173
 
 `npm run build` writes a static site to `dist/` that can be hosted anywhere (GitHub Pages, itch.io, any web server). All paths are relative.
 
+To publish it on itch.io, with leaderboards, and have every push to GitHub update it: [docs/publishing.md](docs/publishing.md).
+
 `npm run build:single` also writes `dist/fodeez-nutz.html`: the whole game in one 160 KB file that plays when you open it, with no server needed.
 
 **Controls**
@@ -87,6 +89,24 @@ The simulation is deterministic, so a replay is just the map, mode, random seed 
 - **The Replays menu** on the title screen has the bot's winning runs for each map and mode, and your fastest and most recent win.
 - **While watching**, you can pause, change speed (1× to 16×), and seek with the slider or the arrow keys. Presses show as yellow squares where they landed.
 
+## Leaderboards
+
+Each level (a map in a mode, so four for now) has a top-100 board. Players sign in with their itch.io account, and every win is posted by itself; signing in also posts your saved best on each level. Each entry has its replay, which anyone can watch from the board.
+
+- **The server** (`server/`) is one small API that runs as a Vercel Function, with Upstash Redis for storage. Both have free plans that cover a game this size.
+- **Every run is checked.** The server replays the submitted inputs with the game's own simulation and only posts the time if they win the level in exactly that many ticks. Runs that used debug teleports, runs from an older version of the game, and runs over 10 hours are refused. Checking takes about 90 ms of CPU per minute of play. A bot-made run with human-looking inputs would still pass, so `POST /api/admin/remove?level=tower:newage&user=itch-123&ban=1` (with `Authorization: Bearer $ADMIN_TOKEN`) takes an entry down and stops that account posting.
+- **Signing in** opens itch.io in a new tab (OAuth with PKCE, scope `profile:me`, so the game only learns your name and profile link). The game waits for the tab to finish, so it works inside itch.io's frame, where redirects and popups are unreliable. If the tab can't open, the player can copy the link into any browser instead.
+- **A board belongs to one version** of the physics and the map (`PHYSICS_VERSION` and the map's layout fingerprint). Changing either starts fresh boards, because the old replays wouldn't play out the same any more.
+- **Without a server** (no `VITE_API_URL` at build time) the game simply has no Leaderboards button. `npm run dev` runs the API itself with an in-memory store and a "type any name" sign-in, so all of it can be tried locally.
+
+Setting it up, and publishing on itch.io: see [docs/publishing.md](docs/publishing.md).
+
+## Achievements and wheels
+
+18 achievements, saved with your progress (`src/game/achievements.ts`). Each level has three: beat it, beat it in under 5 minutes, and beat it in under 1 minute. The rest are milestones: 5 and 25 wins in total, falling 1,000 m and 10,000 m in total (every fall of 30 m or more counts), one 75 m fall, and earning all the others.
+
+Beating a level unlocks a set of wheels for the chair: Girder (The Tower, Original), Neon (The Tower, New Age), Hazard (The Crane, Original) and Goop (The Crane, New Age). Gold comes with the last achievement. Pick them on the Achievements screen. Your wheels are saved in your replays, so other players see them when they watch your runs. Wins from before achievements existed count.
+
 ## What was fixed from 2023 (both modes)
 
 - **Falling through platforms at high speed.** Movement is now checked along the whole path.
@@ -119,7 +139,7 @@ npm run dev        # then open http://localhost:5173/editor.html
 
 On the Tower, the list order matters in Original mode (collisions are resolved in list order, like the 2023 game), so the editor adds new pieces after the others in the same area. Background decorations (signs, lamps, the crane's mast) are drawn in code in `src/render/level-art.ts` and don't move with the pieces.
 
-After changing a map, its bot replay no longer matches: the Replays menu marks it as an older version, and `npm test` reports it. Re-run the bot for that map (below), or delete its file in `src/data/routes/`.
+After changing a map, its bot replay no longer matches: the Replays menu marks it as an older version, and `npm test` reports it. Re-run the bot for that map (below), or delete its file in `src/data/routes/`. Its leaderboards also start over once the change is deployed.
 
 ## Tests
 
@@ -143,7 +163,7 @@ npm run typecheck
 - `ticks=N` simulates N ticks before the first frame.
 - `freeze` stops the simulation.
 - `pointer=x,y` fakes the cursor position.
-- `menu=pause|win|maps|modes|replays|watch|settings|howto` opens a screen (`watch` plays the bot's New Age run on `map`).
+- `menu=pause|win|maps|modes|replays|watch|settings|howto|achievements|leaderboards` opens a screen (`watch` plays the bot's New Age run on `map`; `leaderboards` opens the New Age board for `map`).
 
 `npx playwright test --config tools/screens.config.ts` saves screenshots (phone, tablet, rope, goop) to `screenshots/`, prints CPU and frame-time measurements (`--grep perf`), checks the single-file build (`--grep single`) and the level editor (`--grep editor`), and draws a whole map with its targets numbered (`OVERVIEW=crane --grep overview`; `/tools/overview.html?map=crane` on the dev server does the same).
 
@@ -155,11 +175,13 @@ src/sim/maps/  the two maps
 src/data/      the bot's winning routes (shown as replays in the game)
 src/render/    pixel-art renderer: palette, bitmap font, sprites, level art, sky, particles, camera, HUD
 src/audio/     synthesized sound effects and music (Web Audio)
-src/game/      game loop, input, menus, saving
+src/game/      game loop, input, menus, saving, achievements, the leaderboard client
 src/editor/    the level editor (dev server only) and the code it writes into the map files
 tests/         unit tests, the route-finder bot, section checks, move windows
 tools/         screenshot and performance scripts, the editor's save endpoint, the map overview page
 e2e/           browser tests
+server/        the leaderboard server: itch.io sign-in, boards, replay checking (Vercel Function)
+docs/          publishing on itch.io and setting up the leaderboards
 ```
 
 Everything you see and hear is made in code. There are no image or audio files besides the favicon. The figures near the top of the tower are homages to Getting Over It, Jump King and Pogostuck.

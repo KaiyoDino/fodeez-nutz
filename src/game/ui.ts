@@ -1,11 +1,15 @@
 // Menus are plain HTML on top of the canvas (real buttons, so keyboard and screen readers work).
 
+import { buildDude } from '../render/dude';
 import { bigText } from '../render/font';
 import { P } from '../render/palette';
 import { formatTime } from '../render/renderer';
+import { WHEEL_IDS, WHEELS, type WheelId } from '../render/wheels';
 import { getMap, heightOf, MAP_IDS, type MapId } from '../sim/level';
 import { replayIsCurrent, type Replay } from '../sim/replay';
 import type { Mode, Stats } from '../sim/types';
+import { ACHIEVEMENTS, unlockedWheels, unlockFor } from './achievements';
+import { localVersion, type Board, type Online } from './online';
 import { SPEEDS } from './replay-player';
 import { runKey, type Best, type SavedRun, type SaveData, type Settings } from './save';
 
@@ -19,6 +23,11 @@ export interface UIHandlers {
   watch(replay: Replay, title: string, back: () => void): void;
   openReplays(back: () => void): void;
   sound(kind: 'move' | 'select' | 'back'): void;
+  /** The leaderboard connection. */
+  online: Online;
+  /** Called once a sign-in finishes (the game then posts your saved best times). */
+  signedIn(): void;
+  setWheels(id: WheelId): void;
 }
 
 export interface ReplayBarHandlers {
@@ -64,6 +73,19 @@ function logo(): HTMLImageElement {
   return el('img', { src: logoUrl, alt: 'Fodeez Nutz', className: 'logo' });
 }
 
+const MODES: Mode[] = ['original', 'newage'];
+
+const wheelPics = new Map<WheelId, string>();
+/** A picture of the dude wearing a set of wheels (for the wheel picker). */
+function wheelPicture(id: WheelId): string {
+  let url = wheelPics.get(id);
+  if (!url) {
+    url = buildDude({ facing: 1, wheel: 0.35, aim: null, loaded: true, stuck: false, t: 0, wheels: WHEELS[id] }).toDataURL();
+    wheelPics.set(id, url);
+  }
+  return url;
+}
+
 function describeRun(run: SavedRun): string {
   const map = getMap(run.state.world.map);
   return `${formatTime(run.state.stats.ticks)} · ${Math.max(0, Math.round(heightOf(map, run.state.dude.y) / map.metersPer))} m`;
@@ -72,7 +94,12 @@ function describeRun(run: SavedRun): string {
 export class UI {
   private root: HTMLElement;
   private barRoot: HTMLElement;
+  private toastRoot: HTMLElement;
   private h: UIHandlers;
+  /** The line on the win screen that says how posting the time went. */
+  private winStatus: HTMLElement | null = null;
+  /** Stops polling for a sign-in when its screen closes. */
+  private signInAbort: AbortController | null = null;
   private escape: (() => void) | null = null;
   private bar: { update(tick: number, end: number, speed: number, paused: boolean, done: boolean): void } | null = null;
 
@@ -80,7 +107,8 @@ export class UI {
     this.root = root;
     this.h = handlers;
     this.barRoot = el('div', { className: 'replay-bar-root' });
-    document.body.append(this.barRoot);
+    this.toastRoot = el('div', { className: 'toasts', role: 'status' } as Partial<HTMLDivElement>);
+    document.body.append(this.barRoot, this.toastRoot);
     window.addEventListener(
       'keydown',
       e => {
@@ -102,9 +130,13 @@ export class UI {
   hide(): void {
     this.root.replaceChildren();
     this.escape = null;
+    this.winStatus = null;
   }
 
   private mount(panel: HTMLElement, opts: { escape?: () => void; dim?: boolean } = {}): void {
+    this.winStatus = null;
+    this.signInAbort?.abort();
+    this.signInAbort = null;
     const screen = el('div', { className: 'screen' + (opts.dim === false ? '' : ' dim') }, [panel]);
     this.root.replaceChildren(screen);
     this.escape = opts.escape ?? null;
@@ -193,10 +225,17 @@ export class UI {
     } else {
       buttons.append(this.button('Play', () => this.showMaps(save), { kind: 'primary', autofocus: true }));
     }
-    if (hasReplays) buttons.append(this.button('Replays', () => this.h.openReplays(() => this.showTitle(save, hasReplays))));
-    buttons.append(this.button('How to play', () => this.showHowTo(() => this.showTitle(save, hasReplays))));
-    buttons.append(this.button('Settings', () => this.showSettings(save.settings, () => this.showTitle(save, hasReplays))));
-    buttons.append(this.button('Credits', () => this.showCredits(() => this.showTitle(save, hasReplays))));
+    const again = () => this.showTitle(save, hasReplays);
+    if (this.h.online.enabled) buttons.append(this.button('Leaderboards', () => this.showLeaderboards(save, save.last?.map ?? 'tower', save.last?.mode ?? 'newage', again)));
+    if (hasReplays) buttons.append(this.button('Replays', () => this.h.openReplays(again)));
+    buttons.append(this.button('Achievements', () => this.showAchievements(save, again)));
+    buttons.append(
+      el('div', { className: 'row minor' }, [
+        this.button('How to play', () => this.showHowTo(again), { small: true }),
+        this.button('Settings', () => this.showSettings(save.settings, again), { small: true }),
+        this.button('Credits', () => this.showCredits(again), { small: true }),
+      ]),
+    );
     const panel = el('div', { className: 'panel title' }, [
       logo(),
       el('p', { className: 'tagline', textContent: 'No checkpoints. One plunger. A long way up.' }),
@@ -368,6 +407,249 @@ export class UI {
     this.mount(panel, { escape: onBack, dim: false });
   }
 
+  // ------------------------------------------------------------ leaderboards
+
+  /** Signed-in name and a sign-out button, or a sign-in button. */
+  private account(again: () => void): HTMLElement {
+    const online = this.h.online;
+    const s = online.session;
+    if (s) {
+      return el('div', { className: 'account' }, [
+        el('span', { className: 'muted', textContent: 'Signed in as' }),
+        el('b', { textContent: s.user.name }),
+        this.button(
+          'Sign out',
+          () => {
+            online.signOut();
+            again();
+          },
+          { kind: 'quiet', small: true, sound: 'back' },
+        ),
+      ]);
+    }
+    return el('div', { className: 'account' }, [
+      el('span', { className: 'muted', textContent: 'Sign in to post your times.' }),
+      this.button('Sign in with itch.io', () => this.showSignIn(again, again), { small: true, kind: 'primary' }),
+    ]);
+  }
+
+  /** The top 100 for one level, with a level picker and the replays to watch. */
+  showLeaderboards(save: SaveData, map: MapId, mode: Mode, back: () => void): void {
+    const online = this.h.online;
+    const again = () => this.showLeaderboards(save, map, mode, back);
+    const picker = el('div', { className: 'choices level-picker', role: 'radiogroup' } as Partial<HTMLDivElement>);
+    picker.setAttribute('aria-label', 'Level');
+    for (const id of MAP_IDS)
+      for (const m of MODES) {
+        const b = this.button(`${getMap(id).name} · ${modeName(m)}`, () => this.showLeaderboards(save, id, m, back), { small: true, kind: 'quiet' });
+        b.setAttribute('role', 'radio');
+        const on = id === map && m === mode;
+        b.setAttribute('aria-checked', String(on));
+        b.classList.toggle('active', on);
+        if (on) b.dataset.autofocus = '';
+        picker.append(b);
+      }
+    const list = el('div', { className: 'board' }, [el('p', { className: 'muted', textContent: 'Loading…' })]);
+    const footer = el('div', { className: 'board-footer' });
+    const panel = el('div', { className: 'panel wide' }, [
+      el('h1', { textContent: 'Leaderboards' }),
+      this.account(again),
+      picker,
+      list,
+      footer,
+      el('div', { className: 'row' }, [this.button('Back', back, { kind: 'quiet', sound: 'back' })]),
+    ]);
+    this.mount(panel, { escape: back });
+
+    const key = runKey(map, mode);
+    const title = `${getMap(map).name}, ${modeName(mode)}`;
+    online.board(map, mode).then(
+      (b: Board) => {
+        if (!panel.isConnected) return;
+        const current = b.version === localVersion(map);
+        if (!current) list.replaceChildren(el('p', { className: 'muted', textContent: 'This copy of the game is out of date, so its runs can’t go on the board. Reload the page to update it.' }));
+        else if (!b.entries.length) list.replaceChildren(el('p', { className: 'muted', textContent: 'Nobody has posted a time here yet. Be the first!' }));
+        else {
+          const rows = b.entries.map(e => {
+            const mine = online.session?.user.id === e.user.id;
+            const name = e.user.url ? el('a', { href: e.user.url, target: '_blank', rel: 'noopener', textContent: e.user.name }) : el('span', { textContent: e.user.name });
+            const watch = this.button(
+              'Watch',
+              () => {
+                watch.disabled = true;
+                online.replay(map, mode, e.user.id).then(
+                  r => this.h.watch(r, `#${e.rank} ${e.user.name} · ${title}`, again),
+                  err => {
+                    watch.disabled = false;
+                    this.toast('Couldn’t load that replay', (err as Error).message);
+                  },
+                );
+              },
+              { small: true },
+            );
+            return el('div', { className: 'board-row' + (mine ? ' mine' : '') }, [
+              el('span', { className: 'rank', textContent: `#${e.rank}` }),
+              el('span', { className: 'who' }, [name]),
+              el('span', { className: 'time', textContent: formatTime(e.ticks) }),
+              watch,
+            ]);
+          });
+          list.replaceChildren(...rows);
+        }
+        // your saved best, if it beats what the board has for you
+        const mine = save.replays[key]?.best;
+        const best = save.best[key];
+        if (b.you) footer.append(el('p', { textContent: `You’re #${b.you.rank} here with ${formatTime(b.you.ticks)}.` }));
+        if (current && online.session && mine && replayIsCurrent(mine) && (!b.you || mine.ticks < b.you.ticks)) {
+          const label = `Post your best (${formatTime(mine.ticks)})`;
+          const post = this.button(label, () => {
+            post.disabled = true;
+            post.textContent = 'Posting…';
+            online.submit(mine).then(r => {
+              if (!panel.isConnected) return;
+              if (r.ok) {
+                again();
+                return;
+              }
+              this.toast('Couldn’t post that time', r.message);
+              post.disabled = false;
+              post.textContent = label;
+            });
+          });
+          footer.append(post);
+        } else if (best && !b.you) footer.append(el('p', { className: 'muted', textContent: `Your best here is ${formatTime(best.ticks)}${mine && !replayIsCurrent(mine) ? ', from an older version of the game' : ''}.` }));
+      },
+      err => {
+        if (panel.isConnected) list.replaceChildren(el('p', { className: 'muted', textContent: (err as Error).message }));
+      },
+    );
+  }
+
+  /**
+   * Sign in with itch.io. The sign-in page opens in a new tab (popups and redirects are unreliable
+   * inside itch.io's frame) and this screen waits for it to finish. If the tab can't open, there's
+   * a link to copy into a browser instead; it works from anywhere.
+   */
+  showSignIn(onDone: () => void, back: () => void): void {
+    const online = this.h.online;
+    const { url, lid } = online.signInUrl();
+    let opened: Window | null = null;
+    try {
+      opened = window.open(url, '_blank');
+    } catch {
+      opened = null;
+    }
+    const link = el('a', { href: url, target: '_blank', rel: 'noopener', textContent: 'open the sign-in page' });
+    const copy = this.button(
+      'Copy link',
+      () => {
+        navigator.clipboard?.writeText(url).then(
+          () => (copy.textContent = 'Copied'),
+          () => (copy.textContent = 'Couldn’t copy'),
+        );
+      },
+      { small: true, kind: 'quiet' },
+    );
+    const panel = el('div', { className: 'panel signin' }, [
+      el('h1', { textContent: 'Sign in with itch.io' }),
+      el('p', { textContent: opened ? 'A new tab opened on itch.io. Approve Fodeez Nutz there, then come back. This screen updates by itself.' : 'Open the sign-in page, approve Fodeez Nutz on itch.io, then come back. This screen updates by itself.' }),
+      el('p', { className: 'muted' }, ['Nothing opened? You can ', link, ', or copy the link into any browser.']),
+      el('p', { className: 'muted', textContent: 'The game only gets your itch.io name and profile link.' }),
+      el('div', { className: 'row' }, [copy, this.button('Cancel', back, { kind: 'quiet', sound: 'back' })]),
+    ]);
+    this.mount(panel, { escape: back });
+    const abort = new AbortController();
+    this.signInAbort = abort;
+    online.waitForSignIn(lid, abort.signal).then(s => {
+      if (abort.signal.aborted) return;
+      this.signInAbort = null;
+      if (!s) {
+        this.toast('Sign-in timed out', 'Try again when you’re ready.');
+        back();
+        return;
+      }
+      this.toast('Signed in', `Welcome, ${s.user.name}!`);
+      this.h.signedIn();
+      onDone();
+    });
+  }
+
+  // ------------------------------------------------------------ achievements and wheels
+
+  showAchievements(save: SaveData, back: () => void): void {
+    const again = () => this.showAchievements(save, back);
+    const owned = new Set(unlockedWheels(save));
+    const picker = el('div', { className: 'wheels', role: 'radiogroup' } as Partial<HTMLDivElement>);
+    picker.setAttribute('aria-label', 'Wheels');
+    for (const id of WHEEL_IDS) {
+      const have = owned.has(id);
+      const on = save.wheels === id;
+      const how = unlockFor(id);
+      const b = el('button', { type: 'button', className: 'wheel' + (on ? ' active' : '') + (have ? '' : ' locked'), disabled: !have }, [
+        el('img', { src: wheelPicture(id), alt: '' }),
+        el('span', { className: 'name', textContent: WHEELS[id].name }),
+        el('span', { className: 'how', textContent: have ? (on ? 'On' : 'Put on') : `Earn ${how?.name ?? ''}` }),
+      ]);
+      b.setAttribute('role', 'radio');
+      b.setAttribute('aria-checked', String(on));
+      b.setAttribute('aria-label', `${WHEELS[id].name} wheels${have ? '' : `, locked: earn ${how?.name ?? ''}`}`);
+      if (have) {
+        b.addEventListener('click', () => {
+          this.h.sound('select');
+          this.h.setWheels(id);
+          again();
+        });
+        b.addEventListener('mouseenter', () => this.h.sound('move'));
+      }
+      if (on) b.dataset.autofocus = '';
+      picker.append(b);
+    }
+
+    const groups = new Map<string, HTMLElement>();
+    for (const a of ACHIEVEMENTS) {
+      let list = groups.get(a.group);
+      if (!list) groups.set(a.group, (list = el('div', { className: 'ach-list' })));
+      const got = !!save.progress.unlocked[a.id];
+      const p = got ? undefined : a.progress?.(save);
+      const extra = [p ? `${Math.min(p.have, p.need).toLocaleString('en')} / ${p.need.toLocaleString('en')} ${p.unit}` : '', a.wheels ? `Unlocks ${WHEELS[a.wheels].name} wheels` : ''].filter(Boolean).join(' · ');
+      const row = el('div', { className: 'ach' + (got ? ' got' : '') }, [
+        el('span', { className: 'mark', textContent: got ? '★' : '☆' }),
+        el('div', {}, [el('div', { className: 'ach-name', textContent: a.name }), el('div', { className: 'ach-desc', textContent: a.desc }), extra ? el('div', { className: 'ach-extra', textContent: extra }) : '']),
+      ]);
+      row.firstElementChild!.setAttribute('aria-label', got ? 'Earned' : 'Not earned yet');
+      list.append(row);
+    }
+    const sections = el('div', { className: 'ach-groups' });
+    for (const [name, list] of groups) sections.append(el('section', { className: 'ach-group' }, [el('h2', { textContent: name }), list]));
+    const count = ACHIEVEMENTS.filter(a => save.progress.unlocked[a.id]).length;
+    const panel = el('div', { className: 'panel wide' }, [
+      el('h1', { textContent: 'Achievements' }),
+      el('p', { className: 'muted', textContent: `${count} of ${ACHIEVEMENTS.length} earned. Beating a level unlocks a new set of wheels.` }),
+      el('h2', { className: 'sub', textContent: 'Wheels' }),
+      picker,
+      sections,
+      el('div', { className: 'row' }, [this.button('Back', back, { kind: 'quiet', sound: 'back' })]),
+    ]);
+    this.mount(panel, { escape: back });
+  }
+
+  /** A note in the corner that goes away by itself. */
+  toast(title: string, text?: string): void {
+    const t = el('div', { className: 'toast' }, [el('div', { className: 'toast-title', textContent: title }), text ? el('div', { className: 'toast-text', textContent: text }) : '']);
+    this.toastRoot.append(t);
+    while (this.toastRoot.childElementCount > 4) this.toastRoot.firstElementChild!.remove();
+    setTimeout(() => t.classList.add('out'), 4200);
+    setTimeout(() => t.remove(), 4700);
+  }
+
+  /** Update the leaderboard line on the win screen (if it's still showing). */
+  setWinStatus(text: string, action?: { label: string; run: () => void }): void {
+    const s = this.winStatus;
+    if (!s) return;
+    s.replaceChildren(el('span', { textContent: text }));
+    if (action) s.append(this.button(action.label, action.run, { small: true }));
+  }
+
   // ------------------------------------------------------------ in a run
 
   showPause(map: MapId, mode: Mode, save: SaveData): void {
@@ -493,7 +775,7 @@ export class UI {
     this.mount(panel, { escape: back });
   }
 
-  showWin(map: MapId, mode: Mode, stats: Stats, best: Best | undefined, isNewBest: boolean, onWatch: (() => void) | null, onAgain: () => void, onTitle: () => void): void {
+  showWin(map: MapId, mode: Mode, stats: Stats, best: Best | undefined, isNewBest: boolean, onWatch: (() => void) | null, onAgain: () => void, onTitle: () => void, unlocked: string[] = []): void {
     const m = getMap(map);
     const rows: [string, string][] = [
       ['Time', formatTime(stats.ticks)],
@@ -513,8 +795,12 @@ export class UI {
       el('p', { className: 'muted', textContent: `You beat ${m.name} in ${modeName(mode)}.` }),
       isNewBest ? el('p', { className: 'badge', textContent: 'New best time' }) : best ? el('p', { className: 'muted', textContent: `Best: ${formatTime(best.ticks)}` }) : '',
       table,
+      unlocked.length ? el('div', { className: 'unlocked' }, [el('p', { className: 'muted', textContent: 'Achievements earned' }), ...unlocked.map(u => el('p', { textContent: `★ ${u}` }))]) : '',
       el('div', { className: 'row' }, buttons),
     ]);
+    const status = this.h.online.enabled ? el('div', { className: 'online-status' }) : null;
+    if (status) panel.insertBefore(status, panel.lastElementChild);
     this.mount(panel, { dim: false });
+    this.winStatus = status;
   }
 }

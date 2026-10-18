@@ -1,13 +1,16 @@
 // The game shell: fixed 60 Hz simulation, rendering, input, menus, saving, replays.
 
 import { Audio } from '../audio/audio';
-import { Renderer, snapshot, type Snapshot } from '../render/renderer';
+import { formatTime, Renderer, snapshot, type Snapshot } from '../render/renderer';
+import { wheelStyle, WHEELS } from '../render/wheels';
 import { getMap, heightOf, MAPS, type MapId } from '../sim/level';
 import { isReplay, mapHash, PHYSICS_VERSION, quantize, type RecordedInput, type Replay } from '../sim/replay';
 import { randomSeed } from '../sim/rng';
 import { Sim } from '../sim/sim';
 import type { InputEvent, Mode, SimEvent } from '../sim/types';
 import { TICK_RATE } from '../sim/types';
+import { checkAchievements, unlockedWheels, type Achievement } from './achievements';
+import { Online, type SubmitResult } from './online';
 import { ReplayPlayer, SPEEDS } from './replay-player';
 import { loadSave, runKey, writeSave, ZOOM, type Best, type RunKey, type SaveData, type Settings } from './save';
 import { modeName, UI } from './ui';
@@ -60,7 +63,14 @@ export class Game {
   private time = 0;
   private saveTimer = 0;
   private winTimer = -1;
-  private winInfo: { isNewBest: boolean; prevBest: Best | undefined; replay: Replay | null } = { isNewBest: false, prevBest: undefined, replay: null };
+  private winInfo: { isNewBest: boolean; prevBest: Best | undefined; replay: Replay | null; unlocked: Achievement[]; posting: Promise<SubmitResult> | null } = {
+    isNewBest: false,
+    prevBest: undefined,
+    replay: null,
+    unlocked: [],
+    posting: null,
+  };
+  private online: Online;
   private debug: DebugOptions;
 
   constructor(canvas: HTMLCanvasElement, uiRoot: HTMLElement, debug: DebugOptions) {
@@ -68,6 +78,13 @@ export class Game {
     this.debug = debug;
     this.renderer = new Renderer(canvas);
     this.save = loadSave();
+    // wins from before achievements existed count; no fanfare for those
+    if (checkAchievements(this.save).length) writeSave(this.save);
+    if (!unlockedWheels(this.save).includes(this.save.wheels)) this.save.wheels = 'standard';
+    this.online = new Online(this.save.online, s => {
+      this.save.online = s;
+      writeSave(this.save);
+    });
     this.audio.setVolumes(this.save.settings.music, this.save.settings.sfx);
     this.audio.prime();
     this.audio.playMusic(true);
@@ -85,6 +102,12 @@ export class Game {
       watch: (replay, title, back) => this.watch(replay, title, back),
       openReplays: back => this.ui.showReplays(this.save, BOT_REPLAYS, back),
       sound: k => this.audio.ui(k),
+      online: this.online,
+      signedIn: () => this.postSavedBests(),
+      setWheels: id => {
+        this.save.wheels = id;
+        writeSave(this.save);
+      },
     });
     this.bindInput();
     this.renderer.setZoom(ZOOM[this.save.settings.zoom]);
@@ -136,6 +159,8 @@ export class Game {
       if (d.enabled && d.menu === 'replays') this.ui.showReplays(this.save, BOT_REPLAYS, () => this.showTitle());
       if (d.enabled && d.menu === 'settings') this.ui.showSettings(this.save.settings, () => this.showTitle());
       if (d.enabled && d.menu === 'howto') this.ui.showHowTo(() => this.showTitle());
+      if (d.enabled && d.menu === 'achievements') this.ui.showAchievements(this.save, () => this.showTitle());
+      if (d.enabled && d.menu === 'leaderboards') this.ui.showLeaderboards(this.save, d.map ?? 'tower', d.mode ?? 'newage', () => this.showTitle());
       if (d.enabled && d.menu === 'watch') {
         const bot = BOT_REPLAYS[runKey(d.map ?? 'tower', 'newage')];
         if (bot) this.watch(bot, 'Bot', () => this.showTitle());
@@ -226,16 +251,69 @@ export class Game {
     delete this.save.runs[key];
     let replay: Replay | null = null;
     if (this.recorded) {
-      replay = { v: 1, map, mode, seed: this.sim.state.seed, inputs: this.recorded, ticks: stats.ticks, won: true, by: 'player', date: new Date().toISOString(), stats: { ...stats }, physics: PHYSICS_VERSION, mapHash: mapHash(this.sim.map) };
+      replay = { v: 1, map, mode, seed: this.sim.state.seed, inputs: this.recorded, ticks: stats.ticks, won: true, by: 'player', date: new Date().toISOString(), stats: { ...stats }, physics: PHYSICS_VERSION, mapHash: mapHash(this.sim.map), wheels: this.save.wheels };
       const slot = (this.save.replays[key] ??= {});
       slot.last = replay;
       if (isNewBest || !slot.best) slot.best = replay;
     }
+    const unlocked = checkAchievements(this.save);
     writeSave(this.save);
     this.phase = 'won';
     this.canvas.classList.remove('playing');
     this.winTimer = 1.6;
-    this.winInfo = { isNewBest, prevBest, replay };
+    // post it straight away; the win screen shows how it went
+    const posting = replay && this.online.session ? this.online.submit(replay) : null;
+    this.winInfo = { isNewBest, prevBest, replay, unlocked, posting };
+  }
+
+  /** The win screen's leaderboard line. */
+  private showWinStatus(): void {
+    if (!this.online.enabled) return;
+    const { replay, posting } = this.winInfo;
+    if (!replay) {
+      this.ui.setWinStatus('This run wasn’t recorded, so it can’t go on the leaderboard.');
+      return;
+    }
+    if (this.online.session && !posting) {
+      // signed in from the win screen
+      this.winInfo.posting = this.online.submit(replay);
+      this.showWinStatus();
+      return;
+    }
+    if (!this.online.session || !posting) {
+      this.ui.setWinStatus('Sign in to put this time on the leaderboard.', {
+        label: 'Sign in with itch.io',
+        run: () => this.ui.showSignIn(() => this.showWinScreen(), () => this.showWinScreen()),
+      });
+      return;
+    }
+    this.ui.setWinStatus('Posting your time…');
+    posting.then(r => {
+      if (this.phase !== 'won') return;
+      if (!r.ok) this.ui.setWinStatus(r.message);
+      else if (r.improved && r.rank === 1) this.ui.setWinStatus('#1 on the leaderboard!');
+      else if (r.improved && r.rank) this.ui.setWinStatus(`Posted! You’re #${r.rank} on the leaderboard.`);
+      else if (r.rank && r.ticks === replay.ticks) this.ui.setWinStatus(`You’re #${r.rank} on the leaderboard.`);
+      else if (r.rank) this.ui.setWinStatus(`Your leaderboard time (${formatTime(r.ticks ?? 0)}, #${r.rank}) is still faster.`);
+      else this.ui.setWinStatus(`Not in the top 100 yet${r.cutoff ? ` (100th is ${formatTime(r.cutoff)})` : ''}.`);
+    });
+  }
+
+  /** After signing in: post your saved best run on each level (the server ignores ones that aren't better). */
+  private async postSavedBests(): Promise<void> {
+    for (const key of Object.keys(this.save.replays) as RunKey[]) {
+      const best = this.save.replays[key]?.best;
+      if (!best || !this.online.session) continue;
+      const r = await this.online.submit(best);
+      if (r.ok && r.improved && r.rank) this.ui.toast(`Posted your best on ${getMap(best.map).name} · ${modeName(best.mode)}`, `#${r.rank} with ${formatTime(best.ticks)}`);
+    }
+  }
+
+  private announce(list: Achievement[]): void {
+    for (const a of list) {
+      this.ui.toast(`★ ${a.name}`, a.wheels ? `New wheels: ${WHEELS[a.wheels].name}` : a.desc);
+      this.audio.ui('select');
+    }
   }
 
   private showWinScreen(): void {
@@ -250,7 +328,9 @@ export class Game {
       replay ? () => this.watch(replay, `Your run · ${getMap(map).name}, ${modeName(mode)}`, () => this.showTitle()) : null,
       () => this.play(map, mode, true),
       () => this.showTitle(),
+      this.winInfo.unlocked.map(a => (a.wheels ? `${a.name} · new wheels: ${WHEELS[a.wheels].name}` : a.name)),
     );
+    this.showWinStatus();
   }
 
   private persist(): void {
@@ -486,7 +566,15 @@ export class Game {
     if (!events.length) return;
     this.renderer.onEvents(events, this.sim);
     this.audio.onEvents(events);
-    for (const e of events) if (e.type === 'win') this.onWin();
+    for (const e of events) {
+      if (e.type === 'fall') {
+        const m = e.distance / this.sim.map.metersPer;
+        this.save.progress.fallen += m;
+        this.save.progress.biggestFall = Math.max(this.save.progress.biggestFall, m);
+        this.announce(checkAchievements(this.save));
+      }
+      if (e.type === 'win') this.onWin();
+    }
   }
 
   /** Nothing much moves on screen: a pause menu, a finished or paused replay, the win screen. */
@@ -585,6 +673,7 @@ export class Game {
       interactive: this.phase === 'playing',
       debug: this.debug.enabled && this.phase !== 'replay',
       replay: this.phase === 'replay' && this.player ? { speed: this.player.speed, paused: this.player.paused } : null,
+      wheels: this.phase === 'replay' && this.player ? wheelStyle(this.player.replay.wheels) : WHEELS[this.save.wheels],
     });
     requestAnimationFrame(t => this.frame(t));
   }
