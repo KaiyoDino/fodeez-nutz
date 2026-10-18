@@ -2,7 +2,7 @@
 
 A Foddian climbing game. The dude uses a wheelchair, so he never stops rolling. His grappling hook is a plunger gun. There are no checkpoints, and the only way out is up.
 
-This is a full remake of a 2023 high school final project ([the original Java game](https://github.com/SheebeesLaka/FINALPROJECT)). The map and mechanics come from the original. The art, sound, menus and physics code are new.
+This is a full remake of a 2023 high school final project ([the original Java game](https://github.com/SheebeesLaka/FINALPROJECT)). The first map and the Original mode's mechanics come from the original. The art, sound, menus, physics code, the New Age mode and a second map are new.
 
 ## Play
 
@@ -27,6 +27,28 @@ npm run dev        # http://localhost:5173
 | F | Fullscreen |
 
 Your run saves automatically (like Getting Over It), so you can close the tab and continue later. There are still no checkpoints.
+
+## Two maps
+
+**The Tower** is the original 2023 map, transcribed platform for platform from `MainFrame.java` (`src/sim/maps/tower.ts`). It was built around the original physics.
+
+**The Crane** (`src/sim/maps/crane.ts`) is a new climb up the tower crane next to the building, from the end of the night into dawn. It was designed around New Age physics, especially the swing-and-release fling:
+
+1. **The Yard:** ground level and a few ledges.
+2. **The Mast:** a zig-zag of small ledges.
+3. **The Chimney:** a shaft between two goop walls. Stick, slide, fire across, and climb out over the left wall.
+4. **The Swing Line:** three targets over a long drop, crossed with flings, then a goop wall to catch you.
+5. **The Spring Garden:** one-way spring pads you steer between with the plunger.
+6. **The Jib:** monkey-bars along the underside of the crane's arm, into the hook block hanging off the end.
+
+Both modes can be played on both maps. The route-finder bot (below) beats every combination. Its winning runs are in the game's Replays menu:
+
+| | Original | New Age |
+|---|---|---|
+| The Tower | 18.5 s | 17.9 s |
+| The Crane | 18.7 s | 86.8 s |
+
+The bot has perfect timing, so these are far faster than a person will manage, but they show the shape of each map. Original's reversed-gravity yank is so strong on the Crane's open climbs that it needed no Original-only changes there.
 
 ## Two modes
 
@@ -53,6 +75,14 @@ Your run saves automatically (like Getting Over It), so you can close the tab an
 
 In the original, the only way from area 2 into area 3 was to hook the troll target and slide along the underside of the floor. The reversed-gravity pull pinned him to the ceiling while his horizontal speed carried him about 1,600 px right. A real rope can't do that, so New Age adds a short ladder up the empty right side of area 2: four targets and one goop patch (`NEW_AGE_LADDER` in `src/sim/level.ts`). The rest of the map is identical.
 
+## Replays
+
+The simulation is deterministic, so a replay is just the map, mode, random seed and every press and release with its tick (`src/sim/replay.ts`). Every run records its inputs as you play, and the recording is saved with the run, so it survives quitting and continuing.
+
+- **After a win**, *Watch replay* plays your run back at 4×.
+- **The Replays menu** on the title screen has the bot's winning runs for each map and mode, and your fastest and most recent win.
+- **While watching**, you can pause, change speed (1× to 16×), and seek with the slider or the arrow keys. Presses show as yellow squares where they landed.
+
 ## What was fixed from 2023 (both modes)
 
 - **Falling through platforms at high speed.** Movement is now checked along the whole path.
@@ -74,27 +104,32 @@ npm run test:e2e    # browser tests (Playwright, using the installed Microsoft E
 npm run typecheck
 ```
 
-**Route finder.** `tests/route-finder.ts` is a bot that searches for a winning route with a beam search over "aim at a target, hold N ticks, let go" moves. `FIND_ROUTE=original npm run route` (or `newage`, or `both`) finds a route and saves it to `tests/routes/`. `npm test` replays those routes, so any physics change that makes the map unbeatable fails the tests. Re-run the finder after deliberate physics changes.
+**Route finder.** `tests/route-finder.ts` is a bot that searches for a winning route with a beam search over "aim at a target, hold N ticks, let go" moves. `FIND_ROUTE=tower-newage npm run route` finds a route (also `FIND_ROUTE=crane` for both modes, or `FIND_ROUTE=all`) and saves it to `src/data/routes/`. Those files are the bot replays in the game, and `npm test` replays them, so any physics or map change that makes a map unbeatable fails the tests. Re-run the finder after deliberate physics or map changes.
 
-**Debug mode.** Add `?debug` to the URL. Keys 1–4 teleport to the four areas, as in the original. Extra parameters for screenshots:
+**Section checks.** `SECTIONS=crane-newage npx vitest run tests/_sections.test.ts` runs the bot on each section of the crane separately (from a teleport point to the next section) and writes `tests/_sections.txt`. This is much faster than a full route when tuning one part of the map.
 
+**Debug mode.** Add `?debug` to the URL. The number keys teleport between sections, as the original's dev keys did. Extra parameters for screenshots:
+
+- `map=tower|crane` picks the map.
 - `mode=original|newage` starts a run.
 - `at=x,y` places the dude.
 - `ticks=N` simulates N ticks before the first frame.
 - `freeze` stops the simulation.
 - `pointer=x,y` fakes the cursor position.
-- `menu=pause|win|modes|settings|howto` opens a screen.
+- `menu=pause|win|maps|modes|replays|watch|settings|howto` opens a screen (`watch` plays the bot's New Age run on `map`).
 
 `npx playwright test --config tools/screens.config.ts` saves screenshots (phone, tablet, rope, goop) to `screenshots/`, prints a frame-time measurement (`--grep perf`), and checks the single-file build (`--grep single`).
 
 ## Project layout
 
 ```
-src/sim/       simulation: level data, Original and New Age physics, the Sim facade (no DOM)
+src/sim/       simulation: maps, Original and New Age physics, the Sim facade, replays (no DOM)
+src/sim/maps/  the two maps
+src/data/      the bot's winning routes (shown as replays in the game)
 src/render/    pixel-art renderer: palette, bitmap font, sprites, level art, sky, particles, camera, HUD
 src/audio/     synthesized sound effects and music (Web Audio)
 src/game/      game loop, input, menus, saving
-tests/         unit tests, route finder, recorded routes
+tests/         unit tests, the route-finder bot, section checks
 e2e/           browser tests
 ```
 

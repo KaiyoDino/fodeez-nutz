@@ -7,3 +7,5 @@ playwright-report/
 tests/_trace.txt
 screenshots/
 tests/_lab.txt
+tests/_sections.txt
+tests/_sections_*.txt

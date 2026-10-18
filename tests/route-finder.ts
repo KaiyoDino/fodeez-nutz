@@ -64,12 +64,21 @@ export interface Options {
   holds: number[];
   waits: number[];
   log?: (msg: string) => void;
+  /** Start somewhere other than the map's start (for checking one section at a time). */
+  startAt?: { x: number; y: number; vx?: number };
+  /** Stop as soon as this is true (for checking one section at a time). */
+  goal?: (s: SimState) => boolean;
+  /** Override the map's progress measure. */
+  progress?: (s: SimState) => number;
 }
 
 const DEFAULTS: Record<Mode, Options> = {
   original: { beam: 220, iterations: 220, holds: [2, 4, 7, 10, 14, 19, 25, 200], waits: [3, 10, 25] },
   newage: { beam: 220, iterations: 220, holds: [4, 8, 12, 17, 23, 30, 40, 55, 75], waits: [3, 10, 25] },
 };
+
+let progressFn: (s: SimState) => number = progress;
+let goalFn: (s: SimState) => boolean = s => s.won;
 
 function simulate(node: Node, aim: { x: number; y: number } | null, ticks: number): Node {
   const sim = new Sim(clone(node.state));
@@ -81,20 +90,21 @@ function simulate(node: Node, aim: { x: number; y: number } | null, ticks: numbe
     sim.step([{ kind: 'press', x: aim.x, y: aim.y }]);
     for (let t = 1; t < ticks && !sim.state.won; t++) {
       const ev = sim.step();
-      best = Math.max(best, progress(sim.state));
+      best = Math.max(best, progressFn(sim.state));
+      if (goalFn(sim.state)) break;
       if (ev.some(e => e.type === 'hookCancel' || (e.type === 'hookRelease' && e.auto))) break;
     }
-    if (!sim.state.won) {
+    if (!sim.state.won && !goalFn(sim.state)) {
       inputs.push({ tick: sim.state.stats.ticks, kind: 'release', x: aim.x, y: aim.y });
       sim.step([{ kind: 'release', x: aim.x, y: aim.y }]);
     }
   } else {
-    for (let t = 0; t < ticks && !sim.state.won; t++) {
+    for (let t = 0; t < ticks && !sim.state.won && !goalFn(sim.state); t++) {
       sim.step();
-      best = Math.max(best, progress(sim.state));
+      best = Math.max(best, progressFn(sim.state));
     }
   }
-  const score = progress(sim.state);
+  const score = goalFn(sim.state) ? 1e9 : progressFn(sim.state);
   return { state: sim.state, inputs, score, best: Math.max(best, score) };
 }
 
@@ -106,17 +116,32 @@ function bucket(s: SimState): string {
 
 export function findRoute(map: MapId, mode: Mode, seed = 1, opts: Partial<Options> = {}): Replay | null {
   const o = { ...DEFAULTS[mode], ...opts };
+  progressFn = o.progress ?? progress;
+  goalFn = o.goal ?? (s => s.won);
   const root = Sim.create(mode, seed, map);
+  if (o.startAt) {
+    root.state.dude.x = o.startAt.x;
+    root.state.dude.y = o.startAt.y;
+    if (o.startAt.vx) {
+      root.state.dude.vx = o.startAt.vx;
+      root.state.dude.facing = o.startAt.vx > 0 ? 1 : -1;
+    }
+    root.state.airPeakY = o.startAt.y;
+    if (root.state.original) {
+      root.state.original.hookX = o.startAt.x + 14;
+      root.state.original.hookY = o.startAt.y - 20;
+    }
+  }
   // let him get rolling first
   for (let t = 0; t < 2; t++) root.step();
-  let beam: Node[] = [{ state: root.state, inputs: [], score: progress(root.state), best: progress(root.state) }];
+  let beam: Node[] = [{ state: root.state, inputs: [], score: progressFn(root.state), best: progressFn(root.state) }];
   for (let it = 0; it < o.iterations; it++) {
     const children: Node[] = [];
     for (const node of beam) {
       for (const w of o.waits) children.push(simulate(node, null, w));
       for (const aim of targetsInReach(node.state, mode, 420)) for (const h of o.holds) children.push(simulate(node, aim, h));
     }
-    const win = children.filter(c => c.state.won).sort((a, b) => a.state.stats.ticks - b.state.stats.ticks)[0];
+    const win = children.filter(c => goalFn(c.state)).sort((a, b) => a.state.stats.ticks - b.state.stats.ticks)[0];
     if (win) return { v: 1, map, mode, seed, inputs: win.inputs, ticks: win.state.stats.ticks, won: true, by: 'bot', stats: win.state.stats };
     // keep the best node per position bucket, then the best buckets
     const byBucket = new Map<string, Node>();
