@@ -226,6 +226,29 @@ describe('Original: surfaces', () => {
     expect(s.state.won).toBe(true);
   });
 
+  it('a plunger fired just before the goop reset does not yank him back up', () => {
+    // stuck on the goop wall at the bottom of area 2, one tick before the reset
+    const goopWall = indexWhere(p => p.kind === 'goop' && p.x === 700 && p.y === 2850);
+    const g = TOWER.platforms[goopWall];
+    const s = place(sim('original'), g.x + g.w, 2900, -3, 0);
+    run(s, 3);
+    expect(s.state.original!.onSticky).toBe(true);
+    s.state.original!.dying = 158;
+    // a target right next to him, so the plunger would catch at once
+    const c = targetCenter(indexWhere(p => p.kind === 'target' && p.x === 950 && p.y === 2700));
+    const ev = run(s, 40, t => (t === 0 ? [press(c.x, c.y)] : []));
+    expect(ev.some(e => e.type === 'goopReset')).toBe(true);
+    expect(ev.some(e => e.type === 'hookAttach')).toBe(false);
+    expect(s.state.dude.y).toBeGreaterThan(3600);
+  });
+
+  it('a drop of 15 m is not a fall; the OUCH is for 30 m and more', () => {
+    const s = place(sim('original'), 1300, 3150, 0, 0);
+    const ev = run(s, 200);
+    expect(ev.some(e => e.type === 'fall')).toBe(false);
+    expect(s.state.stats.falls).toBe(0);
+  });
+
   it('counts big drops as falls', () => {
     const s = place(sim('original'), 1300, 2400, 0, 0);
     const ev = run(s, 200);

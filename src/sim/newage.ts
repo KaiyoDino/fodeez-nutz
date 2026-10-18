@@ -1,13 +1,16 @@
 // New Age mode: same map, same wheelchair, same plunger, rebuilt physics.
 //
-// - The plunger rope is a real pendulum: once it sticks you swing, and holding the
-//   mouse winds the rope in (slowly at first, then faster). Letting go keeps your
-//   momentum and adds a small hop.
+// - The plunger rope pulls: once it sticks, holding the mouse reels you toward the
+//   plunger, faster the longer you hold. Your sideways momentum carries through the pull,
+//   and the rope never stretches, so you swing when it goes taut. When you reach the
+//   plunger it lets go and you fly on in the direction it pulled you. Letting go early
+//   keeps your momentum and adds a small hop.
 // - You can fire in any direction, not just upward. 3 grapples per airtime, refilled
 //   by landing or by goop.
 // - Smooth (fractional) speeds, a terminal falling speed, and damped landings.
 // - Springs multiply your speed by 1.75 like the original, but always give at least a
-//   small boing and never more than a fixed cap.
+//   small boing and never more than a fixed cap. A bounce off a pad puts you back to
+//   rolling pace sideways and refills your grapples.
 // - You ride moving platforms properly: your rolling is relative to the platform.
 // - Goop holds you while you slowly slide off (15 px/s). After 160 ticks it lets go.
 
@@ -33,12 +36,18 @@ export const NA = {
   hookSpeed: 30,
   hookRange: 350,
   hookRadius: 6,
-  reelStart: 2,
-  reelAccel: 0.22,
-  reelMax: 9,
-  ropeMin: 50,
-  attachTug: 3,
-  releaseBoost: 4.5,
+  /** Reel-in speed (px/tick toward the plunger): starts at reelStart and builds up to reelMax. */
+  reelStart: 6,
+  reelAccel: 0.5,
+  reelMax: 16,
+  /** How quickly the rope can change his speed toward the plunger (px/tick per tick). */
+  pullAccel: 1.6,
+  /** While reeling, the part of his speed across the rope keeps this much per tick, so he goes where he aimed instead of orbiting the plunger. */
+  acrossKeep: 0.85,
+  /** The plunger lets go once his hand is this close to it. */
+  arriveDist: 40,
+  attachTug: 2,
+  releaseBoost: 3,
   autoReleaseAbove: 40,
   goopSlide: 0.25,
   /** Where the rope meets the dude, relative to his top-left. */
@@ -103,6 +112,12 @@ function isSolid(i: number, world: WorldState): boolean {
 
 export function handOf(d: DudeState) {
   return { x: d.x + NA.hand.x, y: d.y + NA.hand.y };
+}
+
+/** Is this target's centre within letting-go distance of his hand? */
+export function nearHand(d: DudeState, p: Box): boolean {
+  const hand = handOf(d);
+  return len(hand.x - (p.x + p.w / 2), hand.y - (p.y + p.h / 2)) <= NA.arriveDist;
 }
 
 function releaseHook(n: NewAgeState): void {
@@ -242,9 +257,14 @@ function resolveY(c: Ctx, prevY: number): void {
       }
       if (def.kind === 'spring') {
         d.vy = -clamp(speed * NA.springMult, NA.springMin, NA.springCap);
-        // his wheels touch the pad, so he keeps rolling (and can't bounce in place forever)
-        const rel = d.vx - c.pdx[i];
-        if (Math.abs(rel) < NA.cruise) d.vx += d.facing * Math.min(1, NA.cruise - Math.abs(rel));
+        // His wheels touch the pad, so he goes back to rolling pace: pads bounce you up, not
+        // sideways, and he can't bounce in place forever either.
+        let rel = d.vx - c.pdx[i];
+        if (rel !== 0) d.facing = rel > 0 ? 1 : -1;
+        rel = d.facing * Math.min(NA.cruise, Math.max(Math.abs(rel), 1));
+        d.vx = c.pdx[i] + rel;
+        // a bounce counts as touching down: the grapples refill (as in the original)
+        n.grapples = 0;
         c.events.push({ type: 'spring', speed, x: d.x + DUDE.w / 2, y: p.y, axis: 'y' });
         continue;
       }
@@ -329,6 +349,9 @@ function updateHook(c: Ctx): void {
         if (!isVisible(def, world) || def.kind === 'goal' || isOneWay(L[i])) continue;
         const p = platformBox(world, i);
         if (!overlaps(h.x - NA.hookRadius, h.y - NA.hookRadius, NA.hookRadius * 2, NA.hookRadius * 2, p)) continue;
+        // A target right at his hand can't be grabbed (the rope would let go at once), so the
+        // plunger flies on past it. This matters when he's stuck on goop beside a target.
+        if (def.kind === 'target' && nearHand(d, p)) continue;
         if (def.kind === 'target') {
           if (n.grapples >= MAX_GRAPPLES) {
             releaseHook(n);
@@ -341,7 +364,7 @@ function updateHook(c: Ctx): void {
           h.y = p.y + p.h / 2;
           h.held = 0;
           const hand = handOf(d);
-          h.len = Math.max(NA.ropeMin, len(hand.x - h.x, hand.y - h.y));
+          h.len = len(hand.x - h.x, hand.y - h.y);
           n.grapples++;
           if (n.stuck) {
             n.noRegrab = n.stuck.i;
@@ -374,32 +397,42 @@ function updateHook(c: Ctx): void {
       return;
     }
     const hand = handOf(d);
-    if (hand.y < h.y - NA.autoReleaseAbove) {
+    // arrived (or swung up over the top): let go and fly on
+    if (len(hand.x - h.x, hand.y - h.y) <= NA.arriveDist || hand.y < h.y - NA.autoReleaseAbove) {
       releaseHook(n);
       c.events.push({ type: 'hookRelease', x: h.x, y: h.y, auto: true });
     }
   }
 }
 
-/** Keep the hand within rope length of the plunger (an inextensible rope), winding it in while held. */
+/**
+ * The rope while held. His velocity splits into a part toward the plunger and a part across
+ * the rope. The across part (his old momentum, and gravity's swing) fades a little each tick,
+ * so the pull wins and carries him through the plunger instead of around it. The toward part
+ * is driven up to the reel speed, which builds the longer he holds. The rope never gets
+ * longer, so if it's taut he can't move away from the plunger: he swings instead.
+ */
 function applyRope(c: Ctx): void {
   const { d, n } = c;
   const h = n.hook;
   if (h.state !== 'attached') return;
   h.held++;
-  const reel = Math.min(NA.reelMax, NA.reelStart + NA.reelAccel * h.held);
-  h.len = Math.max(NA.ropeMin, h.len - reel);
   const hand = handOf(d);
-  const px = hand.x + d.vx;
-  const py = hand.y + d.vy;
-  const dx = px - h.x;
-  const dy = py - h.y;
+  const dx = h.x - hand.x;
+  const dy = h.y - hand.y;
   const dist = len(dx, dy);
-  if (dist > h.len) {
-    const k = h.len / dist;
-    d.vx = h.x + dx * k - hand.x;
-    d.vy = h.y + dy * k - hand.y;
-  }
+  if (dist < 1) return;
+  const ux = dx / dist;
+  const uy = dy / dist;
+  let toward = d.vx * ux + d.vy * uy;
+  const acrossX = (d.vx - toward * ux) * NA.acrossKeep;
+  const acrossY = (d.vy - toward * uy) * NA.acrossKeep;
+  h.len = Math.min(h.len, dist);
+  if (toward < 0 && dist >= h.len - 0.5) toward = 0;
+  const reel = Math.min(NA.reelMax, NA.reelStart + NA.reelAccel * h.held);
+  if (toward < reel) toward = Math.min(reel, toward + NA.pullAccel);
+  d.vx = acrossX + toward * ux;
+  d.vy = acrossY + toward * uy;
 }
 
 export interface NewAgeTickResult {

@@ -4,8 +4,6 @@ test-results/
 playwright-report/
 *.log
 .DS_Store
-tests/_trace.txt
 screenshots/
-tests/_lab.txt
-tests/_sections.txt
-tests/_sections_*.txt
+# output of the dev tools in tests/_*.test.ts
+tests/_*.txt

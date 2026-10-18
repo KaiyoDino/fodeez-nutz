@@ -3,7 +3,7 @@
 // smoothed down to the exact window size ("sharp bilinear") so pixels stay even.
 
 import { DUDE, heightOf, TOWER, type MapDef, type MapId } from '../sim/level';
-import { handOf, NA } from '../sim/newage';
+import { handOf, NA, nearHand } from '../sim/newage';
 import { HOOK_RANGE, HOOK_SIZE } from '../sim/original';
 import type { Sim } from '../sim/sim';
 import type { SimEvent } from '../sim/types';
@@ -48,6 +48,8 @@ export interface FrameInput {
   debug: boolean;
   /** Set while watching a replay. */
   replay?: { speed: number; paused: boolean } | null;
+  /** Crosshair size. */
+  cursor: 'small' | 'medium' | 'large';
 }
 
 interface Message {
@@ -72,6 +74,9 @@ export class Renderer {
   private scale = 1;
   private dpr = 1;
   private k = 1;
+  /** Camera zoom: 1 shows at least 960x540 game px; bigger shows less, closer up. */
+  private zoom = 1;
+  private cssSize = { w: 960, h: 540, dpr: 1 };
 
   private platformArt = new Map<string, HTMLCanvasElement>();
   /** The map being drawn (taken from the simulation each frame). */
@@ -127,8 +132,15 @@ export class Renderer {
     return c;
   }
 
-  /** Size the canvas to the window. View is at least 960x540 game px (1920x1080 world). */
+  setZoom(zoom: number): void {
+    if (zoom === this.zoom) return;
+    this.zoom = zoom;
+    this.resize(this.cssSize.w, this.cssSize.h, this.cssSize.dpr);
+  }
+
+  /** Size the canvas to the window. At zoom 1 the view is at least 960x540 game px (1920x1080 world). */
   resize(cssW: number, cssH: number, devicePixelRatio: number): void {
+    this.cssSize = { w: cssW, h: cssH, dpr: devicePixelRatio };
     this.dpr = Math.min(3, Math.max(1, devicePixelRatio || 1));
     const devW = Math.max(1, Math.round(cssW * this.dpr));
     const devH = Math.max(1, Math.round(cssH * this.dpr));
@@ -146,11 +158,13 @@ export class Renderer {
       this.vw = 600;
       this.vh = Math.round(600 / aspect);
     }
+    this.vw = Math.round(this.vw / this.zoom);
+    this.vh = Math.round(this.vh / this.zoom);
     // Small screens: shrink the view until a game pixel is about a CSS pixel, but always
-    // keep at least 400 game px (800 world units) on the short side.
+    // keep at least 400 game px (800 world units) on the short side (less when zoomed in).
     const cssScale = cssH / this.vh;
     if (cssScale < 1) {
-      const f = Math.max(cssScale, 400 / Math.min(this.vw, this.vh));
+      const f = Math.max(cssScale, 400 / this.zoom / Math.min(this.vw, this.vh));
       if (f < 1) {
         this.vw = Math.round(this.vw * f);
         this.vh = Math.round(this.vh * f);
@@ -473,14 +487,17 @@ export class Renderer {
 
     // ---- upscale
     const out = this.ctx;
-    if (this.k === 1 && Math.abs(this.scale - 1) < 1e-6) {
+    if (Math.abs(this.scale - this.k) < 1e-6) {
+      // a whole-number scale: one nearest-neighbour blit
       out.imageSmoothingEnabled = false;
-      out.drawImage(this.low, 0, 0);
+      out.drawImage(this.low, 0, 0, this.canvas.width, this.canvas.height);
     } else {
+      // The mid canvas is never more than 2x the output, so plain bilinear is enough for
+      // the smooth step (and much cheaper on the GPU than 'high').
       this.mctx.imageSmoothingEnabled = false;
       this.mctx.drawImage(this.low, 0, 0, this.mid.width, this.mid.height);
       out.imageSmoothingEnabled = true;
-      out.imageSmoothingQuality = 'high';
+      out.imageSmoothingQuality = 'low';
       out.drawImage(this.mid, 0, 0, this.canvas.width, this.canvas.height);
     }
 
@@ -512,7 +529,7 @@ export class Renderer {
       if (def.role) {
         const want = isVisible(def, s.world) ? 1 : 0;
         const cur = this.roleAlpha.get(i) ?? want;
-        const next = want > cur ? Math.min(1, cur + f.dt * 5) : Math.max(0, cur - f.dt * 5);
+        const next = want > cur ? Math.min(1, cur + f.dt * 5) : want < cur ? Math.max(0, cur - f.dt * 5) : cur;
         this.roleAlpha.set(i, next);
         alpha = next;
         if (alpha <= 0) continue;
@@ -644,6 +661,7 @@ export class Renderer {
           if (!isVisible(def, s.world) || def.kind === 'goal') continue;
           if (s.newage && def.kind === 'spring' && def.w > def.h) continue;
           const bx = s.world.platX[i];
+          if (s.newage && def.kind === 'target' && nearHand(s.dude, { x: bx, y: def.y, w: def.w, h: def.h })) continue;
           if (hx + pad > bx && hx - pad < bx + def.w && hy + pad > def.y && hy - pad < def.y + def.h) {
             hit = def.kind === 'target' ? 'target' : 'solid';
             hitIndex = i;
@@ -651,13 +669,20 @@ export class Renderer {
         }
         if (hit !== 'none') break;
       }
-      const color = hit === 'target' ? P.c2 : 'rgba(246,246,242,0.55)';
-      const steps = Math.floor(dist / SCALE / 3);
-      for (let i = 2; i < steps; i++) {
-        const gx = Math.round(ox / SCALE - cx + ux * i * 3);
-        const gy = Math.round(oy / SCALE - cy + uy * i * 3);
-        if (i % 2 === 0) dot(ctx, gx, gy, color);
+      // dashes with a dark shadow, so the line reads against sky, girders and goop alike
+      const color = hit === 'target' ? P.c2 : P.white;
+      const steps = Math.floor(dist / SCALE);
+      for (const pass of [0, 1]) {
+        ctx.globalAlpha = pass ? (hit === 'target' ? 1 : 0.8) : 0.6;
+        for (let i = 6; i < steps; i++) {
+          if (i % 6 >= 3) continue;
+          const gx = Math.round(ox / SCALE - cx + ux * i);
+          const gy = Math.round(oy / SCALE - cy + uy * i);
+          if (pass) dot(ctx, gx, gy, color);
+          else rect(ctx, gx, gy + 1, 1, 1, P.ink);
+        }
       }
+      ctx.globalAlpha = 1;
       if (hit === 'target' && hitIndex >= 0) {
         const def = this.map.platforms[hitIndex];
         const bx = Math.round(s.world.platX[hitIndex] / SCALE - cx);
@@ -676,14 +701,7 @@ export class Renderer {
       }
       void muzzle;
     }
-    // crosshair
-    for (const [ddx, ddy] of [[0, -3], [0, -2], [0, 2], [0, 3], [-3, 0], [-2, 0], [2, 0], [3, 0]]) {
-      dot(ctx, px + ddx + 1, py + ddy + 1, P.ink);
-    }
-    for (const [ddx, ddy] of [[0, -3], [0, -2], [0, 2], [0, 3], [-3, 0], [-2, 0], [2, 0], [3, 0]]) dot(ctx, px + ddx, py + ddy, crossColor);
-    if (!can) {
-      dot(ctx, px, py, crossColor);
-    }
+    drawCrosshair(ctx, px, py, crossColor, f.cursor, can);
   }
 
   private drawHud(f: FrameInput, sim: Sim): void {
@@ -758,3 +776,21 @@ export function formatTime(ticks: number): string {
   return `${h > 0 ? h + ':' : ''}${mm}:${String(sec).padStart(2, '0')}.${tenth}`;
 }
 
+/**
+ * The aiming crosshair, in game px: four arms around a centre dot, outlined in ink so it
+ * stands out on any background. Red with no centre gap when a press wouldn't fire.
+ */
+function drawCrosshair(ctx: Ctx, px: number, py: number, color: string, size: 'small' | 'medium' | 'large', can: boolean): void {
+  const { gap, arm, thick } = size === 'small' ? { gap: 2, arm: 2, thick: 1 } : size === 'medium' ? { gap: 3, arm: 6, thick: 1 } : { gap: 3, arm: 8, thick: 2 };
+  const t0 = -Math.floor((thick - 1) / 2);
+  const arms = [
+    { x: px + t0, y: py - gap - arm, w: thick, h: arm },
+    { x: px + t0, y: py + gap + 1, w: thick, h: arm },
+    { x: px - gap - arm, y: py + t0, w: arm, h: thick },
+    { x: px + gap + 1, y: py + t0, w: arm, h: thick },
+  ];
+  for (const a of arms) rect(ctx, a.x - 1, a.y - 1, a.w + 2, a.h + 2, P.ink);
+  if (size !== 'small' || !can) rect(ctx, px + t0 - 1, py + t0 - 1, thick + 2, thick + 2, P.ink);
+  for (const a of arms) rect(ctx, a.x, a.y, a.w, a.h, color);
+  if (size !== 'small' || !can) rect(ctx, px + t0, py + t0, thick, thick, color);
+}

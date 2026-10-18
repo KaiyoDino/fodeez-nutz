@@ -3,13 +3,13 @@
 import { Audio } from '../audio/audio';
 import { Renderer, snapshot, type Snapshot } from '../render/renderer';
 import { getMap, heightOf, MAPS, type MapId } from '../sim/level';
-import { isReplay, quantize, type RecordedInput, type Replay } from '../sim/replay';
+import { isReplay, mapHash, PHYSICS_VERSION, quantize, type RecordedInput, type Replay } from '../sim/replay';
 import { randomSeed } from '../sim/rng';
 import { Sim } from '../sim/sim';
 import type { InputEvent, Mode, SimEvent } from '../sim/types';
 import { TICK_RATE } from '../sim/types';
 import { ReplayPlayer, SPEEDS } from './replay-player';
-import { loadSave, runKey, writeSave, type Best, type RunKey, type SaveData, type Settings } from './save';
+import { loadSave, runKey, writeSave, ZOOM, type Best, type RunKey, type SaveData, type Settings } from './save';
 import { modeName, UI } from './ui';
 
 const TICK = 1 / TICK_RATE;
@@ -69,6 +69,7 @@ export class Game {
     this.renderer = new Renderer(canvas);
     this.save = loadSave();
     this.audio.setVolumes(this.save.settings.music, this.save.settings.sfx);
+    this.audio.prime();
     this.audio.playMusic(true);
     this.sim = Sim.create('original', 1);
     this.prev = snapshot(this.sim);
@@ -86,6 +87,7 @@ export class Game {
       sound: k => this.audio.ui(k),
     });
     this.bindInput();
+    this.renderer.setZoom(ZOOM[this.save.settings.zoom]);
     this.onResize();
     window.addEventListener('resize', () => this.onResize());
     if (window.visualViewport) window.visualViewport.addEventListener('resize', () => this.onResize());
@@ -114,6 +116,19 @@ export class Game {
         this.onWin();
         this.winTimer = 0.01;
       }
+    } else if (!d.enabled && !this.audio.running) {
+      // Sound needs a click or key press first. If the browser allows autoplay, the audio
+      // starts by itself a moment later and the start screen goes straight away.
+      this.phase = 'title';
+      this.ui.showGate(() => {
+        this.audio.unlock();
+        this.showTitle();
+      });
+      this.audio.onRunning(() => {
+        if (this.phase !== 'title' || !this.ui.gateOpen) return;
+        this.ui.closeGate();
+        this.showTitle();
+      });
     } else {
       this.showTitle();
       if (d.enabled && d.menu === 'maps') this.ui.showMaps(this.save);
@@ -211,7 +226,7 @@ export class Game {
     delete this.save.runs[key];
     let replay: Replay | null = null;
     if (this.recorded) {
-      replay = { v: 1, map, mode, seed: this.sim.state.seed, inputs: this.recorded, ticks: stats.ticks, won: true, by: 'player', date: new Date().toISOString(), stats: { ...stats } };
+      replay = { v: 1, map, mode, seed: this.sim.state.seed, inputs: this.recorded, ticks: stats.ticks, won: true, by: 'player', date: new Date().toISOString(), stats: { ...stats }, physics: PHYSICS_VERSION, mapHash: mapHash(this.sim.map) };
       const slot = (this.save.replays[key] ??= {});
       slot.last = replay;
       if (isNewBest || !slot.best) slot.best = replay;
@@ -248,6 +263,7 @@ export class Game {
   private applySettings(s: Settings): void {
     this.save.settings = s;
     this.audio.setVolumes(s.music, s.sfx);
+    this.renderer.setZoom(ZOOM[s.zoom]);
     writeSave(this.save);
   }
 
@@ -473,7 +489,21 @@ export class Game {
     for (const e of events) if (e.type === 'win') this.onWin();
   }
 
+  /** Nothing much moves on screen: a pause menu, a finished or paused replay, the win screen. */
+  private idle(): boolean {
+    if (this.phase === 'paused') return true;
+    if (this.phase === 'won') return this.winTimer <= 0;
+    if (this.phase === 'replay') return !this.player || this.player.paused || this.player.done;
+    return false;
+  }
+
   private frame(now: number): void {
+    // While idle, redraw at about 20 fps instead of the display's full rate: the screen is
+    // nearly still, and a full-screen redraw every frame keeps the GPU (and fans) busy.
+    if (this.idle() && now - this.last < 1000 / 20) {
+      requestAnimationFrame(t => this.frame(t));
+      return;
+    }
     const dt = Math.min(0.25, Math.max(0, (now - this.last) / 1000));
     this.last = now;
     this.time += dt;
@@ -537,7 +567,7 @@ export class Game {
     const map = getMap(sim.mapId);
     const height = heightOf(map, sim.state.dude.y);
     this.audio.setIntensity(this.phase === 'title' ? 0.2 : height / (map.world.h * 0.7));
-    this.audio.update(sim, this.phase === 'playing' || (this.phase === 'replay' && !!this.player && this.player.speed <= 2 && !this.player.paused));
+    this.audio.update(sim, this.phase === 'playing' || (this.phase === 'replay' && !!this.player && this.player.speed <= 2 && !this.player.paused && !this.player.done));
 
     const s = this.save.settings;
     this.renderer.render({
@@ -548,6 +578,7 @@ export class Game {
       dt,
       pointer: this.pointer,
       aimGuide: s.aimGuide,
+      cursor: s.cursor,
       showTimer: s.showTimer,
       shake: s.shake && this.phase !== 'replay',
       hud: this.phase === 'playing' || this.phase === 'paused' || this.phase === 'replay',

@@ -1,14 +1,14 @@
 import { DUDE, getMap, heightOf, MAPS, type MapDef, type MapId } from './level';
 import { applyNewAgeInput, handOf, newNewAgeState, stepNewAge, type NewAgeState } from './newage';
-import { applyOriginalInput, HOOK_SIZE, newOriginalState, stepOriginal, type OriginalState } from './original';
+import { applyOriginalInput, HOOK_SIZE, newOriginalState, resetHook, stepOriginal, type OriginalState } from './original';
 import type { DudeState, DudeView, HookView, InputEvent, Mode, SimEvent, Stats } from './types';
 import { GOOP_TICKS, MAX_GRAPPLES } from './types';
 import { mapOf, newWorld, updateAbove, updateCameos, type WorldState } from './world';
 
 /** v2 added maps (v1 saves are tower runs and are migrated on load). */
 export const SAVE_VERSION = 2;
-/** A drop bigger than this (world px) counts as a fall in the stats. */
-export const FALL_THRESHOLD = 400;
+/** A drop bigger than this (world px, 30 m) counts as a fall: an OUCH and a tick on the falls counter. */
+export const FALL_THRESHOLD = 1200;
 
 export interface SimState {
   v: number;
@@ -156,12 +156,18 @@ export class Sim {
     s.dude.vy = 0;
     if (s.original) {
       s.original.onSticky = false;
+      s.original.onGoopTop = false;
       s.original.stuckSide = null;
+      s.original.stuckMover = -1;
+      s.original.dying = 0;
+      resetHook(s.dude, s.original);
     }
     if (s.newage) {
       s.newage.stuck = null;
       s.newage.hook.state = 'idle';
+      s.newage.hook.target = -1;
       s.newage.ground = -1;
+      s.newage.noRegrab = -1;
     }
     s.airPeakY = to.y;
     return [{ type: 'teleport', x: to.x, y: to.y }];

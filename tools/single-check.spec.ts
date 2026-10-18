@@ -9,7 +9,12 @@ test('single-file build runs from disk', async ({ page }) => {
   page.on('pageerror', e => errors.push(String(e)));
   page.on('console', m => m.type() === 'error' && errors.push(m.text()));
   await page.goto(pathToFileURL(join(import.meta.dirname, '..', 'dist', 'fodeez-nutz.html')).href);
-  await expect(page.getByRole('button', { name: 'Play', exact: true })).toBeVisible();
+  // the start screen (browsers want a click before sound), unless autoplay is allowed
+  const gate = page.getByRole('button', { name: 'Click to start' });
+  const play = page.getByRole('button', { name: 'Play', exact: true });
+  await expect(gate.or(play)).toBeVisible();
+  if (await gate.isVisible()) await gate.click();
+  await expect(play).toBeVisible();
   await page.waitForTimeout(500);
   expect(errors).toEqual([]);
   await page.screenshot({ path: join(import.meta.dirname, '..', 'screenshots', 'single-file.png') });

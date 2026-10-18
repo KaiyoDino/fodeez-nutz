@@ -27,6 +27,8 @@ export interface PlatformDef {
   onlyIn?: Mode;
   /** Which area of the map it belongs to. */
   area: number;
+  /** A comment for map editors (shown in the level editor, kept when it saves). */
+  note?: string;
 }
 
 export interface Cameo {
@@ -60,6 +62,8 @@ export interface MapDef {
   theme: 'sunset' | 'dawn';
   /** World units per meter for the HUD. */
   metersPer: number;
+  /** Names of the map's areas, by area number (for the level editor and the map file's comments). */
+  areas?: readonly string[];
 }
 
 /** The dude's hitbox, unchanged from the original. */
@@ -69,7 +73,7 @@ export const girder = (x: number, y: number, w: number, h: number, area: number,
 export const target = (x: number, y: number, area: number, extra: Partial<PlatformDef> = {}): PlatformDef => ({ x, y, w: 25, h: 25, kind: 'target', area, ...extra });
 export const goop = (x: number, y: number, w: number, h: number, area: number, extra: Partial<PlatformDef> = {}): PlatformDef => ({ x, y, w, h, kind: 'goop', area, ...extra });
 export const spring = (x: number, y: number, w: number, h: number, area: number, extra: Partial<PlatformDef> = {}): PlatformDef => ({ x, y, w, h, kind: 'spring', area, ...extra });
-export const goal = (x: number, y: number, w: number, h: number, area: number): PlatformDef => ({ x, y, w, h, kind: 'goal', area });
+export const goal = (x: number, y: number, w: number, h: number, area: number, extra: Partial<PlatformDef> = {}): PlatformDef => ({ x, y, w, h, kind: 'goal', area, ...extra });
 
 /** Height above the map's floor (its bottom 100 px), in world px, of a dude whose top-left is at y. */
 export const heightOf = (map: MapDef, y: number): number => map.world.h - 100 - (y + DUDE.h);

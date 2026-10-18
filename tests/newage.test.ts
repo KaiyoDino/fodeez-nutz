@@ -51,6 +51,15 @@ describe('New Age: springs', () => {
     expect(s.state.dude.x).toBeGreaterThan(950);
   });
 
+  it('refill grapples and send him straight up at rolling pace', () => {
+    const s = place(sim('newage'), 1800, 1085, 8, 20);
+    s.state.newage!.grapples = 3;
+    const ev = s.step();
+    expect(ev.some(e => e.type === 'spring')).toBe(true);
+    expect(s.state.newage!.grapples).toBe(0);
+    expect(Math.abs(s.state.dude.vx)).toBeLessThanOrEqual(NA.cruise + 1e-9);
+  });
+
   it('always give at least a small boing', () => {
     const s = place(sim('newage'), 1800, 1099.5, 0, 1);
     s.step();
@@ -65,7 +74,7 @@ describe('New Age: the rope', () => {
     expect(ev.some(e => e.type === 'hookFire')).toBe(true);
   });
 
-  it('swings on a rope that never stretches, and winds in while held', () => {
+  it('never lets the rope stretch, and reels him in while held', () => {
     const s = place(sim('newage'), 830, START.y, NA.cruise, 0);
     const c = targetCenter(firstTarget);
     s.step([press(c.x, c.y)]);
@@ -83,6 +92,39 @@ describe('New Age: the rope', () => {
     }
     expect(lens.length).toBeGreaterThan(5);
     expect(lens[lens.length - 1]).toBeLessThan(lens[0]);
+  });
+
+  it('lets go when he reaches the plunger and flings him on the way it pulled him', () => {
+    // rolling right on the floor, a target up and to the right
+    const s = place(sim('newage'), 700, START.y, NA.cruise, 0);
+    const c = targetCenter(firstTarget);
+    expect(c.x).toBeGreaterThan(700 + 23 + 100);
+    s.step([press(c.x, c.y)]);
+    let autoRelease = false;
+    for (let t = 0; t < 90 && !autoRelease; t++) autoRelease = s.step().some(e => e.type === 'hookRelease' && e.auto);
+    expect(autoRelease).toBe(true);
+    s.step([release()]);
+    // fly on: up past the target, and further right than it
+    let top = { x: 0, y: Infinity };
+    for (let t = 0; t < 120; t++) {
+      s.step();
+      const centre = { x: s.state.dude.x + 23, y: s.state.dude.y + 25 };
+      if (centre.y < top.y) top = centre;
+    }
+    expect(top.y).toBeLessThan(c.y - 40);
+    expect(top.x).toBeGreaterThan(c.x + 40);
+  });
+
+  it('flies past a target that is right at his hand', () => {
+    // two targets 200 px apart at the same height (area 1, y 2950); his hand is just left of the first
+    const near = indexWhere(p => p.kind === 'target' && p.x === 1050 && p.y === 2950);
+    const far = indexWhere(p => p.kind === 'target' && p.x === 1250 && p.y === 2950);
+    const a = targetCenter(near);
+    const b = targetCenter(far);
+    const s = place(sim('newage'), a.x - 22 - NA.hand.x, a.y - NA.hand.y, 0, 0);
+    const ev = run(s, 12, t => (t === 0 ? [press(b.x, b.y)] : []));
+    const attach = ev.find(e => e.type === 'hookAttach');
+    expect(attach && attach.type === 'hookAttach' && attach.x).toBeCloseTo(b.x, 0);
   });
 
   it('letting go keeps momentum and adds a hop', () => {

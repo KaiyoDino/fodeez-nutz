@@ -375,6 +375,14 @@ export interface StaticLayer {
   canvas: HTMLCanvasElement;
 }
 
+/** Just the map's background decorations (signs, lamps, the crane's mast), for the level editor. */
+export function buildDecorLayer(map: MapDef): HTMLCanvasElement {
+  const wpx = worldPx(map);
+  const c = makeCanvas(wpx.w, wpx.h);
+  DECOR[map.id](ctx2d(c), wpx);
+  return c;
+}
+
 /** Paint everything that never moves (in both modes) into one map-sized canvas. */
 export function buildStaticLayer(map: MapDef): StaticLayer {
   const wpx = worldPx(map);
@@ -443,10 +451,11 @@ function decorCrane(ctx: Ctx, wpx: { w: number; h: number }): void {
   const floor = wpx.h - 50;
   sign(ctx, 360, 0, ['MAX LOAD:', '1 DUDE'], P.y1, P.ink, { posts: 30, ground: floor, stripes: true });
   sign(ctx, 800, 0, ['AUTHORIZED', 'PERSONNEL', 'ONLY'], P.white, P.r0, { posts: 20, ground: floor });
-  sign(ctx, 965, 1700, ['CAUTION', 'GOOP'], P.y1, P.ink, { stripes: true });
+  sign(ctx, 497, 1690, ['CAUTION', 'GOOP'], P.y1, P.ink, { stripes: true });
   sign(ctx, 470, 1420, ['MIND', 'THE GAP'], P.white, P.ink, {});
   sign(ctx, 1010, 268, ['NO', 'SWINGING'], P.r1, P.white, {});
-  lamp(ctx, 760, 1960, 2);
+  lamp(ctx, 1050, 2230, 2);
+  lamp(ctx, 600, 1570, 2);
   lamp(ctx, 600, 265, 4);
   lamp(ctx, 360, 265, 4);
   // stencilled section numbers on the outer walls

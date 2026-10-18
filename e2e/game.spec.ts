@@ -27,10 +27,20 @@ function collectErrors(page: Page): string[] {
 
 const phase = (page: Page) => page.evaluate(() => window.__game.phase());
 
+/** Without ?debug the game opens on "Click to start" (unless the browser allows autoplay). */
+async function passGate(page: Page): Promise<void> {
+  const gate = page.getByRole('button', { name: 'Click to start' });
+  const play = page.getByRole('button', { name: 'Play', exact: true });
+  await expect(gate.or(play)).toBeVisible();
+  if (await gate.isVisible()) await gate.click();
+  await expect(play).toBeVisible();
+}
+
 test('title screen loads cleanly', async ({ page }) => {
   const errors = collectErrors(page);
   await page.goto('/');
   await expect(page.getByRole('img', { name: 'Fodeez Nutz' })).toBeVisible();
+  await passGate(page);
   await expect(page.getByRole('button', { name: 'Play', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Replays' })).toBeVisible();
   await page.waitForTimeout(500);
@@ -66,6 +76,9 @@ test('escape pauses, and settings and the run survive a reload', async ({ page }
   const aim = page.getByLabel('Aim guide');
   await expect(aim).toBeChecked();
   await aim.uncheck();
+  // zoom and crosshair size are picked from a row of buttons
+  await page.getByRole('radiogroup', { name: 'Zoom' }).getByRole('radio', { name: 'Close' }).click();
+  await page.getByRole('radiogroup', { name: 'Crosshair' }).getByRole('radio', { name: 'Large' }).click();
   await page.getByRole('button', { name: 'Done' }).click();
   await page.getByRole('button', { name: 'Resume' }).click();
   await expect.poll(() => phase(page)).toBe('playing');
@@ -73,6 +86,8 @@ test('escape pauses, and settings and the run survive a reload', async ({ page }
   await expect(page.getByRole('button', { name: /Continue · The Tower, Original/ })).toBeVisible();
   await page.getByRole('button', { name: 'Settings' }).click();
   await expect(page.getByLabel('Aim guide')).not.toBeChecked();
+  await expect(page.getByRole('radiogroup', { name: 'Zoom' }).getByRole('radio', { name: 'Close' })).toHaveAttribute('aria-checked', 'true');
+  await expect(page.getByRole('radiogroup', { name: 'Crosshair' }).getByRole('radio', { name: 'Large' })).toHaveAttribute('aria-checked', 'true');
 });
 
 for (const name of ['tower-original', 'tower-newage', 'crane-newage', 'crane-original']) {
@@ -114,6 +129,7 @@ test('the replays menu plays the bot runs, with seeking', async ({ page }) => {
 test('phone-sized screen has no sideways scrolling', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/');
+  await passGate(page);
   await page.getByRole('button', { name: 'Play', exact: true }).click();
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(0);

@@ -2,8 +2,8 @@
 // seed and the inputs it received on each tick. Replaying feeds the same inputs to a fresh
 // simulation on the same ticks.
 
-import type { MapId } from './map-types';
-import { MAPS } from './maps';
+import type { MapDef, MapId } from './map-types';
+import { getMap, MAPS } from './maps';
 import { Sim, type SimState } from './sim';
 import type { InputEvent, Mode, SimEvent, Stats } from './types';
 
@@ -27,6 +27,30 @@ export interface Replay {
   by: 'bot' | 'player';
   date?: string;
   stats?: Stats;
+  /** The physics it was recorded with (missing on replays from before versions were kept). */
+  physics?: number;
+  /** Fingerprint of the map's layout when it was recorded (see mapHash). */
+  mapHash?: string;
+}
+
+/** Bumped whenever a physics change would make old replays play out differently. 2: New Age's pull-and-fling rope. */
+export const PHYSICS_VERSION = 2;
+
+/** A short fingerprint of a map's layout (notes left out), so a replay can tell the map was edited since. */
+export function mapHash(map: MapDef): string {
+  const plats = map.platforms.map(p => [p.kind, p.x, p.y, p.w, p.h, p.mover?.range ?? 0, p.mover?.speed ?? 0, p.role ?? '', p.onlyIn ?? '']);
+  const s = JSON.stringify([map.world, map.start, map.goopReset, plats]);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+/** Will this replay play back the way it was recorded? (Same physics, same map layout.) */
+export function replayIsCurrent(r: Replay): boolean {
+  return (r.physics ?? 1) === PHYSICS_VERSION && r.mapHash === mapHash(getMap(r.map));
 }
 
 /** Inputs are kept to whole world units so a replay always matches the live run bit for bit. */

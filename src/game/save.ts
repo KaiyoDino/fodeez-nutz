@@ -14,7 +14,15 @@ export interface Settings {
   shake: boolean;
   aimGuide: boolean;
   showTimer: boolean;
+  /** Crosshair size. */
+  cursor: CursorSize;
+  /** How close the camera is. 'far' shows 1920x1080 world px, like the original on a 1080p screen. */
+  zoom: Zoom;
 }
+
+export type CursorSize = 'small' | 'medium' | 'large';
+export type Zoom = 'far' | 'normal' | 'close';
+export const ZOOM: Record<Zoom, number> = { far: 1, normal: 1.25, close: 1.5 };
 
 export interface Best {
   ticks: number;
@@ -50,7 +58,7 @@ const prefersReducedMotion = (): boolean => {
   }
 };
 
-export const DEFAULT_SETTINGS: Settings = { music: 0.6, sfx: 0.8, shake: !prefersReducedMotion(), aimGuide: true, showTimer: true };
+export const DEFAULT_SETTINGS: Settings = { music: 0.6, sfx: 0.8, shake: !prefersReducedMotion(), aimGuide: true, showTimer: true, cursor: 'medium', zoom: 'normal' };
 
 function empty(): SaveData {
   return { v: 2, settings: { ...DEFAULT_SETTINGS }, runs: {}, best: {}, wins: {}, replays: {}, last: null };
@@ -69,6 +77,8 @@ function readSettings(raw: Partial<Settings> | undefined): Settings {
     shake: typeof s.shake === 'boolean' ? s.shake : DEFAULT_SETTINGS.shake,
     aimGuide: typeof s.aimGuide === 'boolean' ? s.aimGuide : DEFAULT_SETTINGS.aimGuide,
     showTimer: typeof s.showTimer === 'boolean' ? s.showTimer : DEFAULT_SETTINGS.showTimer,
+    cursor: s.cursor === 'small' || s.cursor === 'medium' || s.cursor === 'large' ? s.cursor : DEFAULT_SETTINGS.cursor,
+    zoom: s.zoom === 'far' || s.zoom === 'normal' || s.zoom === 'close' ? s.zoom : DEFAULT_SETTINGS.zoom,
   };
 }
 

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0d0b20" />
+    <title>Level Editor · Fodeez Nutz</title>
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  </head>
+  <body class="editor">
+    <main id="stage">
+      <canvas id="view" aria-label="The map. Click a piece to select it, drag to move it, drag empty space to pan, scroll to zoom."></canvas>
+      <div id="hud" aria-live="polite"></div>
+    </main>
+    <aside id="panel"></aside>
+    <script type="module" src="/src/editor/main.ts"></script>
+  </body>
+</html>

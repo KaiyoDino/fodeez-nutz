@@ -4,7 +4,7 @@ import { bigText } from '../render/font';
 import { P } from '../render/palette';
 import { formatTime } from '../render/renderer';
 import { getMap, heightOf, MAP_IDS, type MapId } from '../sim/level';
-import type { Replay } from '../sim/replay';
+import { replayIsCurrent, type Replay } from '../sim/replay';
 import type { Mode, Stats } from '../sim/types';
 import { SPEEDS } from './replay-player';
 import { runKey, type Best, type SavedRun, type SaveData, type Settings } from './save';
@@ -35,7 +35,7 @@ const MODE_INFO: Record<Mode, { name: string; blurb: string }> = {
   },
   newage: {
     name: 'New Age',
-    blurb: 'Rebuilt physics. The rope really swings and winds you in while you hold, you can fire in any direction, and goop lets you slide off slowly before it drops you.',
+    blurb: 'Rebuilt physics. Hold and the rope reels you in, faster the longer you hold, then flings you on past the plunger. Fire in any direction. Goop lets you slide off slowly before it drops you.',
   },
 };
 
@@ -139,6 +139,50 @@ export class UI {
 
   // ------------------------------------------------------------ title and run selection
 
+  /**
+   * "Click to start": browsers won't play sound until the page gets a click or key press,
+   * so the first screen asks for one and the music starts with it.
+   */
+  showGate(onStart: () => void): void {
+    let done = false;
+    const go = () => {
+      if (done) return;
+      done = true;
+      this.gateClose = null;
+      window.removeEventListener('keydown', onKey, true);
+      onStart();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Tab' || e.key === 'Shift' || e.key === 'Alt' || e.key === 'Control' || e.key === 'Meta') return;
+      e.preventDefault();
+      go();
+    };
+    const start = el('button', { type: 'button', className: 'gate-start', textContent: 'Click to start' });
+    const panel = el('div', { className: 'panel title gate' }, [logo(), start, el('p', { className: 'muted', textContent: 'or press any key' })]);
+    this.mount(panel, { dim: false });
+    panel.parentElement!.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      go();
+    });
+    window.addEventListener('keydown', onKey, true);
+    this.gateClose = () => {
+      done = true;
+      window.removeEventListener('keydown', onKey, true);
+    };
+  }
+
+  get gateOpen(): boolean {
+    return this.gateClose !== null;
+  }
+
+  /** Drops the start screen without starting (used when the browser allows sound anyway). */
+  closeGate(): void {
+    this.gateClose?.();
+    this.gateClose = null;
+  }
+
+  private gateClose: (() => void) | null = null;
+
   showTitle(save: SaveData, hasReplays: boolean): void {
     const last = save.last;
     const run = last ? save.runs[runKey(last.map, last.mode)] : undefined;
@@ -238,10 +282,16 @@ export class UI {
         if (mine?.last && mine.last !== mine.best && mine.last.ticks !== mine.best?.ticks) rows.push(['Your last win', mine.last]);
         for (const [who, r] of rows) {
           const title = `${who} · ${map.name}, ${modeName(mode)}`;
+          const old = !replayIsCurrent(r);
+          const what = el('span', { className: 'what', textContent: modeName(mode) });
+          if (old) {
+            what.append(el('span', { className: 'stale', textContent: ' · older version' }));
+            what.title = 'Recorded before a change to the physics or this map, so it may not play out the same way.';
+          }
           list.append(
             el('div', { className: 'replay-row' }, [
               el('span', { className: 'who', textContent: who }),
-              el('span', { className: 'what', textContent: modeName(mode) }),
+              what,
               el('span', { className: 'time', textContent: formatTime(r.ticks) }),
               this.button('Watch', () => this.h.watch(r, title, again), { small: true }),
             ]),
@@ -283,12 +333,20 @@ export class UI {
     exit.addEventListener('click', () => handlers.exit());
     const bar = el('div', { className: 'replay-bar' }, [el('span', { className: 'replay-title', textContent: title }), play, speeds, seek, time, exit]);
     this.barRoot.replaceChildren(bar);
+    // only touch the DOM when something changed (this runs every frame)
+    let last = '';
     this.bar = {
       update: (tick, end, speed, paused, done) => {
-        play.textContent = done ? 'Restart' : paused ? 'Play' : 'Pause';
+        const label = done ? 'Restart' : paused ? 'Play' : 'Pause';
+        const pos = String(Math.round((tick / Math.max(1, end)) * 1000));
+        const clock = `${formatTime(tick)} / ${formatTime(end)}`;
+        const key = `${label}|${speed}|${pos}|${clock}|${dragging}`;
+        if (key === last) return;
+        last = key;
+        if (play.textContent !== label) play.textContent = label;
         for (const { sp, b } of speedButtons) b.classList.toggle('active', sp === speed);
-        if (!dragging) seek.value = String(Math.round((tick / Math.max(1, end)) * 1000));
-        time.textContent = `${formatTime(tick)} / ${formatTime(end)}`;
+        if (!dragging && seek.value !== pos) seek.value = pos;
+        if (time.textContent !== clock) time.textContent = clock;
       },
     };
   }
@@ -350,6 +408,30 @@ export class UI {
       });
       return el('div', { className: 'setting toggle' }, [el('label', { htmlFor: id, textContent: label }), input]);
     };
+    const choice = <K extends 'cursor' | 'zoom'>(label: string, key: K, options: [Settings[K], string][]) => {
+      const group = el('div', { className: 'choices', role: 'radiogroup' } as Partial<HTMLDivElement>);
+      group.setAttribute('aria-label', label);
+      const buttons = options.map(([value, text]) => {
+        const b = el('button', { type: 'button', className: 'btn small quiet', textContent: text });
+        b.setAttribute('role', 'radio');
+        b.addEventListener('click', () => {
+          s[key] = value;
+          this.h.sound('move');
+          sync();
+          change();
+        });
+        group.append(b);
+        return { value, b };
+      });
+      const sync = () => {
+        for (const { value, b } of buttons) {
+          b.classList.toggle('active', value === s[key]);
+          b.setAttribute('aria-checked', String(value === s[key]));
+        }
+      };
+      sync();
+      return el('div', { className: 'setting choice' }, [el('span', { className: 'label', textContent: label }), group]);
+    };
     const panel = el('div', { className: 'panel' }, [
       el('h1', { textContent: 'Settings' }),
       el('div', { className: 'settings' }, [
@@ -358,6 +440,16 @@ export class UI {
         toggle('set-aim', 'Aim guide', 'aimGuide'),
         toggle('set-timer', 'Show timer', 'showTimer'),
         toggle('set-shake', 'Screen shake', 'shake'),
+        choice('Crosshair', 'cursor', [
+          ['small', 'Small'],
+          ['medium', 'Medium'],
+          ['large', 'Large'],
+        ]),
+        choice('Zoom', 'zoom', [
+          ['far', 'Far'],
+          ['normal', 'Normal'],
+          ['close', 'Close'],
+        ]),
       ]),
       el('div', { className: 'row' }, [this.button('Fullscreen', () => this.h.toggleFullscreen(), { kind: 'quiet' }), this.button('Done', back, { kind: 'primary', sound: 'back', autofocus: true })]),
     ]);
@@ -370,7 +462,7 @@ export class UI {
       el('ul', {}, [
         el('li', { textContent: 'He can’t stop rolling. Walls turn him around.' }),
         el('li', { textContent: 'Click or tap to fire his plunger. It only sticks to targets; anything else stops it.' }),
-        el('li', { textContent: 'Hold to hang on, let go to fly. You get 3 shots per jump. Landing or goop refills them.' }),
+        el('li', { textContent: 'Hold to be pulled in, let go to fly. You get 3 shots per jump. Landing, springs or goop refill them.' }),
         el('li', { textContent: 'Red girders are solid. Springs bounce you. Purple goop grabs you from any side.' }),
         el('li', { textContent: 'There are no checkpoints. Your run is saved whenever you leave.' }),
         el('li', { textContent: 'Two maps: The Tower (the original, built for Original physics) and The Crane (built for New Age). Both modes work on both.' }),
@@ -383,7 +475,7 @@ export class UI {
         ]),
         el('section', { className: 'card newage' }, [
           el('h2', { textContent: 'New Age' }),
-          el('p', { textContent: 'Fire in any direction. Hooked, you swing on a real rope that winds in faster the longer you hold. You keep your speed when you let go, so time your release to fling yourself. Goop lets you slide off slowly, then drops you.' }),
+          el('p', { textContent: 'Fire in any direction. Hold and the rope reels you toward the plunger, faster the longer you hold. When you reach it, it lets go and you fly on the way it pulled you; let go early to keep the speed you have. Spring pads bounce you up and refill your shots. Goop lets you slide off slowly, then drops you.' }),
         ]),
       ]),
       el('div', { className: 'row' }, [this.button('Got it', back, { kind: 'primary', sound: 'back' })]),

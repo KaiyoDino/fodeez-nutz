@@ -6,7 +6,7 @@ const root = join(import.meta.dirname, '..');
 export default defineConfig({
   ...base,
   testDir: '.',
-  testMatch: ['screens.spec.ts', 'perf.spec.ts', 'single-check.spec.ts'],
+  testMatch: ['screens.spec.ts', 'perf.spec.ts', 'single-check.spec.ts', 'visual.spec.ts'],
   outputDir: join(root, 'test-results'),
   webServer: { ...(base.webServer as object), command: 'npx vite --port 5199 --strictPort --host 127.0.0.1', cwd: root } as never,
 });

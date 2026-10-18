@@ -22,6 +22,8 @@
 //    it's identical there, and on other maps he no longer flips when an unrelated mover turns.
 //  - The hook's aim is computed by normalizing the vector instead of atan/cos/sin. It's the
 //    same math, but gives identical bits in every browser, which replays rely on.
+//  - Being sent back to the start by goop drops the plunger. Otherwise a plunger fired just
+//    before the reset could catch afterwards and yank him from the start right back up.
 //
 // Kept on purpose, including the odd bits: reversed gravity while hooked, spring bounces
 // that multiply by 1.75 with no cap, riding moving girders at platform speed + 2, the goop
@@ -164,6 +166,19 @@ function friction(c: Ctx): void {
 function dropHook(o: OriginalState): void {
   o.wantsHook = false;
   o.attached = false;
+}
+
+/** Put the plunger away completely, as if the mouse had been let go (for resets and teleports). */
+export function resetHook(d: DudeState, o: OriginalState): void {
+  o.wantsHook = false;
+  o.attached = false;
+  o.goHook = true;
+  o.trackMouse = true;
+  o.gravity = 1;
+  o.hookDx = 0;
+  o.hookDy = 0;
+  o.hookX = d.x + 14;
+  o.hookY = d.y - 20;
 }
 
 /** One pass of the original's vertical collision loop. Returns true if any collision response moved the dude. */
@@ -462,6 +477,10 @@ export function stepOriginal(d: DudeState, o: OriginalState, world: WorldState, 
     o.onGoopTop = false;
     o.stuckSide = null;
     o.dying = 0;
+    // Fix: the trip back to the start drops the plunger. In the original a plunger fired in
+    // the last moments on the goop could catch right after the reset and yank him all the
+    // way back up from the start.
+    resetHook(d, o);
   }
 
   d.vy += o.gravity;

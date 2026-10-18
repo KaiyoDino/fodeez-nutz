@@ -57,15 +57,50 @@ export class Audio {
   private roll: { src: AudioBufferSourceNode; gain: GainNode; filter: BiquadFilterNode } | null = null;
   private lastPlayed = new Map<string, number>();
 
-  /** Must be called from a user gesture (browsers block audio until then). */
-  unlock(): void {
-    if (this.ac) {
-      if (this.ac.state === 'suspended') void this.ac.resume();
+  /**
+   * Build the audio graph straight away. Browsers keep it silent (suspended) until the page
+   * gets a click or key press, unless they allow autoplay for this site.
+   */
+  prime(): void {
+    if (!this.ac) this.create();
+  }
+
+  /** Is sound actually playing? (False until the browser lets it start.) */
+  get running(): boolean {
+    return this.ac?.state === 'running';
+  }
+
+  /** Call when the audio starts running (immediately if it already is). */
+  onRunning(cb: () => void): void {
+    const ac = this.ac;
+    if (!ac) return;
+    if (ac.state === 'running') {
+      cb();
       return;
     }
+    const check = () => {
+      if (ac.state !== 'running') return;
+      ac.removeEventListener('statechange', check);
+      cb();
+    };
+    ac.addEventListener('statechange', check);
+  }
+
+  /** Call from a user gesture (a click or key press): starts or resumes sound. */
+  unlock(): void {
+    if (!this.ac) this.create();
+    if (this.ac && this.ac.state === 'suspended') void this.ac.resume().catch(() => undefined);
+  }
+
+  private create(): void {
     const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (!Ctor) return;
-    const ac = new Ctor();
+    let ac: AudioContext;
+    try {
+      ac = new Ctor();
+    } catch {
+      return;
+    }
     this.ac = ac;
     this.master = ac.createGain();
     this.master.gain.value = 0.9;
