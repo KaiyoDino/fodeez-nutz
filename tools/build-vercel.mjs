@@ -1,6 +1,7 @@
 // Builds the game and the leaderboard API for Vercel, in Vercel's Build Output API format:
 //   .vercel/output/static/                 the game (the same files as dist/)
-//   .vercel/output/functions/api/*.func/   the API (server/vercel.ts bundled with the simulation)
+//   .vercel/output/functions/api.func/     the API (server/vercel.ts bundled with the simulation),
+//                                          one function for every /api/* path
 // Vercel runs this as the build command (see vercel.json): npm run build:vercel
 import { execSync } from 'node:child_process';
 import { cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -37,18 +38,20 @@ await build({
   },
 });
 
-// ...copied to each endpoint. (One function per path keeps routing trivial: Vercel maps
-// functions/api/board.func to /api/board.) Checking a submitted run can take a while.
-const ENDPOINTS = ['health', 'me', 'board', 'replay', 'submit', 'auth/start', 'auth/callback', 'auth/poll', 'auth/logout', 'admin/remove', 'maps', 'maps/get', 'maps/mine', 'maps/upload', 'maps/rate', 'maps/delete'];
-for (const path of ENDPOINTS) {
-  const dir = join(out, 'functions', 'api', `${path}.func`);
-  mkdirSync(dir, { recursive: true });
-  cpSync(bundle, dir, { recursive: true });
-  const config = { runtime: 'nodejs22.x', handler: 'index.js', launcherType: 'Nodejs', maxDuration: path === 'submit' || path === 'maps/upload' ? 300 : 15 };
-  writeFileSync(join(dir, '.vc-config.json'), JSON.stringify(config, null, 2));
-  writeFileSync(join(dir, 'package.json'), JSON.stringify({ type: 'commonjs' }));
-}
+// ...as a single function. The Hobby plan allows at most 12 functions per deployment, so
+// every /api/* path is rewritten to this one (the route goes along as __route, and
+// server/vercel.ts puts it back). Checking a submitted run or an uploaded map can take a
+// while, hence the long limit; other requests finish in well under a second.
+const dir = join(out, 'functions', 'api.func');
+mkdirSync(dir, { recursive: true });
+cpSync(bundle, dir, { recursive: true });
+writeFileSync(join(dir, '.vc-config.json'), JSON.stringify({ runtime: 'nodejs22.x', handler: 'index.js', launcherType: 'Nodejs', maxDuration: 300 }, null, 2));
+writeFileSync(join(dir, 'package.json'), JSON.stringify({ type: 'commonjs' }));
 rmSync(bundle, { recursive: true, force: true });
 
-writeFileSync(join(out, 'config.json'), JSON.stringify({ version: 3 }, null, 2));
+const config = {
+  version: 3,
+  routes: [{ src: '^/api/(.+)$', dest: '/api?__route=$1' }],
+};
+writeFileSync(join(out, 'config.json'), JSON.stringify(config, null, 2));
 console.log(`Vercel output written to ${out}`);

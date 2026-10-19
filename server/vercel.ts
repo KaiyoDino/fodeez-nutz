@@ -1,5 +1,5 @@
 // The Vercel Function entry point. tools/build-vercel.mjs bundles this (with the simulation)
-// into .vercel/output/functions/api/*.func.
+// into .vercel/output/functions/api.func, which answers every /api/* path.
 //
 // Environment variables (Vercel project settings):
 //   KV_REST_API_URL, KV_REST_API_TOKEN   Upstash Redis (added for you when you connect an Upstash
@@ -10,7 +10,7 @@
 //   ADMIN_TOKEN                          optional; enables /api/admin/remove
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createApi } from './api';
-import { originOf, sendResponse, toRequest } from './node-adapter';
+import { originOf, restoreRoute, sendResponse, toRequest } from './node-adapter';
 import { UpstashStore } from './store';
 
 const env = process.env;
@@ -34,5 +34,6 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     res.end(JSON.stringify({ error: 'not-configured', message: 'The leaderboard database isn’t connected yet.' }));
     return;
   }
+  req.url = restoreRoute(req.url ?? '/');
   await sendResponse(res, await api(await toRequest(req, originOf(req))));
 }

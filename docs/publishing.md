@@ -15,7 +15,7 @@ If the tests fail, nothing is uploaded. Everything below is free:
 | Service | What it does here | Free plan |
 |---|---|---|
 | itch.io | hosts the game page | Free to publish. itch.io only takes a share of money you make, and you pick the share (default 10%, can be 0%). A free game pays nothing. |
-| Vercel (Hobby) | runs the leaderboard server (and a copy of the game) | Free for non-commercial projects. About 4 hours of CPU a month, which is enough to check a few thousand 30-minute runs. |
+| Vercel (Hobby) | runs the leaderboard server (and a copy of the game) | Free for non-commercial projects. About 4 hours of CPU a month, which is enough to check a few thousand 30-minute runs. At most 12 functions per deployment; the whole API is one function, so that's never a problem. |
 | Upstash Redis | stores boards, replays, sign-ins and community maps | 256 MB and 500,000 commands a month. Showing a board is about 3 commands, posting a run about 10. A community map takes up to about 50 KB. |
 | GitHub Actions | tests and uploads to itch.io | Free for public repositories (2,000 minutes a month for private ones; a run takes about 2). |
 
@@ -95,4 +95,5 @@ The map's id is in the list at `https://<your-vercel-address>/api/maps?sort=new`
 | "Sign-in is not set up" | `ITCH_CLIENT_ID` is missing in Vercel, or the project wasn't redeployed after adding it. |
 | itch.io complains about the redirect URI | The OAuth app's redirect URI doesn't exactly match `https://<your-vercel-address>/api/auth/callback`. |
 | "The leaderboard database isn't connected yet" | Upstash isn't connected to the Vercel project, or the project wasn't redeployed. |
+| "No more than 12 Serverless Functions can be added to a Deployment on the Hobby plan" | An old build, from before the API was one function. Redeploy from the latest commit. |
 | Progress or sign-in is forgotten on itch.io | The browser blocks storage for games in frames (Safari, or Chrome with third-party cookies blocked). The game still runs, but forgets between visits. Those players can play the Vercel copy, where saving works normally. |

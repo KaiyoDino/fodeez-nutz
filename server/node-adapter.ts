@@ -30,6 +30,20 @@ export async function sendResponse(res: ServerResponse, response: Response): Pro
   res.end(Buffer.from(await response.arrayBuffer()));
 }
 
+/**
+ * The path a request was really for. On Vercel every /api/* path goes to one function (the
+ * Hobby plan allows 12 per deployment), through a rewrite that passes the path as `__route`.
+ * If the function sees the rewritten URL, this puts the original path back.
+ */
+export function restoreRoute(url: string): string {
+  const u = new URL(url, 'http://x');
+  const route = u.searchParams.get('__route');
+  if (route === null) return url;
+  u.searchParams.delete('__route');
+  if (u.pathname === '/api' || u.pathname === '/api/' || u.pathname === '/api/index') u.pathname = `/api/${route.replace(/^\/+/, '')}`;
+  return u.pathname + u.search;
+}
+
 /** The public origin of a request, from the proxy headers Vercel (and most hosts) set. */
 export function originOf(req: IncomingMessage): string {
   const proto = (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0] ?? 'http';

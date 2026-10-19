@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { BOARD_SIZE, boardVersion, createApi } from '../server/api';
+import { restoreRoute } from '../server/node-adapter';
 import { MemoryStore } from '../server/store';
 import { packReplay, unpackReplay, verifyReplay, type Replay } from '../src/sim/replay';
 
@@ -181,5 +182,18 @@ describe('packed replays', () => {
     const back = unpackReplay(JSON.parse(JSON.stringify(packReplay(r))));
     expect(back?.inputs).toEqual(r.inputs);
     expect(back?.ticks).toBe(r.ticks);
+  });
+});
+
+describe('the one Vercel function', () => {
+  it('puts back the path the rewrite passed along, keeping the query', () => {
+    expect(restoreRoute('/api?__route=board&level=crane%3Anewage')).toBe('/api/board?level=crane%3Anewage');
+    expect(restoreRoute('/api?level=tower%3Aoriginal&__route=maps%2Fget')).toBe('/api/maps/get?level=tower%3Aoriginal');
+    expect(restoreRoute('/api?__route=auth/callback&code=abc&state=xyz')).toBe('/api/auth/callback?code=abc&state=xyz');
+    expect(restoreRoute('/api/index?__route=health')).toBe('/api/health');
+  });
+  it('leaves a URL that wasn’t rewritten alone', () => {
+    expect(restoreRoute('/api/board?level=tower%3Anewage')).toBe('/api/board?level=tower%3Anewage');
+    expect(restoreRoute('/api/health')).toBe('/api/health');
   });
 });
