@@ -10,6 +10,7 @@ import { getMap, heightOf, MAP_IDS, type MapId } from '../sim/level';
 import { replayIsCurrent, type Replay } from '../sim/replay';
 import type { Mode, Stats } from '../sim/types';
 import { ACHIEVEMENTS, unlockedWheels, unlockFor } from './achievements';
+import { bindFromEvent } from './keybind';
 import { difficulty, localVersion, type Board, type MapSort, type MapSummary, type Online } from './online';
 import { SPEEDS } from './replay-player';
 import { runKey, type Best, type SavedRun, type SaveData, type Settings } from './save';
@@ -118,6 +119,8 @@ export class UI {
   /** Stops polling for a sign-in when its screen closes. */
   private signInAbort: AbortController | null = null;
   private escape: (() => void) | null = null;
+  /** Set while Settings waits for a key to bind: it gets the next key press, and nothing else does. */
+  private keyCapture: ((e: KeyboardEvent) => void) | null = null;
   private bar: { update(tick: number, end: number, speed: number, paused: boolean, done: boolean): void } | null = null;
 
   constructor(root: HTMLElement, handlers: UIHandlers) {
@@ -129,6 +132,12 @@ export class UI {
     window.addEventListener(
       'keydown',
       e => {
+        if (this.keyCapture) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          if (!e.repeat) this.keyCapture(e);
+          return;
+        }
         if (e.key === 'Escape' && this.escape && this.root.childElementCount > 0) {
           e.preventDefault();
           e.stopPropagation();
@@ -144,7 +153,13 @@ export class UI {
     return this.root.childElementCount > 0;
   }
 
+  /** True while Settings is waiting for a key to bind. */
+  get capturingKey(): boolean {
+    return this.keyCapture !== null;
+  }
+
   hide(): void {
+    this.keyCapture = null;
     this.root.replaceChildren();
     this.escape = null;
     this.winStatus = null;
@@ -152,6 +167,7 @@ export class UI {
 
   private mount(panel: HTMLElement, opts: { escape?: () => void; dim?: boolean } = {}): void {
     this.winStatus = null;
+    this.keyCapture = null;
     this.signInAbort?.abort();
     this.signInAbort = null;
     const screen = el('div', { className: 'screen' + (opts.dim === false ? '' : ' dim') }, [panel]);
@@ -1026,6 +1042,52 @@ export class UI {
       sync();
       return el('div', { className: 'setting choice' }, [el('span', { className: 'label', textContent: label }), group]);
     };
+    // the restart key: click, then press the key (Esc cancels)
+    const restartKey = () => {
+      const set = el('button', { type: 'button', className: 'btn small quiet keybind', id: 'set-restart' });
+      const clear = this.button('Clear', () => {
+        s.restartKey = null;
+        sync();
+        change();
+      }, { kind: 'quiet', small: true, sound: 'back' });
+      const note = el('p', { className: 'setting-note muted' });
+      const sync = (waiting = false) => {
+        set.textContent = waiting ? 'Press a key…' : (s.restartKey?.label ?? 'Not set');
+        set.classList.toggle('active', waiting);
+        set.setAttribute('aria-label', waiting ? 'Press a key for Restart (Esc cancels)' : `Restart key: ${s.restartKey?.label ?? 'not set'}`);
+        clear.hidden = waiting || !s.restartKey;
+        if (!waiting) note.textContent = s.restartKey ? `${s.restartKey.label} starts the run over from the beginning, with no question asked. In the map maker it plays your map from the start.` : 'A key that starts the run over from the beginning. In the map maker it plays your map from the start.';
+      };
+      const stop = () => {
+        this.keyCapture = null;
+        sync();
+      };
+      set.addEventListener('click', () => {
+        this.h.sound('select');
+        if (this.keyCapture) return stop();
+        sync(true);
+        note.textContent = 'Press the key (with Ctrl, Alt or Shift if you like). Esc cancels.';
+        this.keyCapture = e => {
+          if (['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) return; // wait for the key itself
+          if (e.key === 'Escape') {
+            this.h.sound('back');
+            return stop();
+          }
+          const r = bindFromEvent(e);
+          if (!r.ok) {
+            note.textContent = r.reason;
+            return;
+          }
+          s.restartKey = r.bind;
+          this.h.sound('move');
+          stop();
+          change();
+          set.focus();
+        };
+      });
+      sync();
+      return el('div', { className: 'setting keybind-row' }, [el('label', { htmlFor: 'set-restart', textContent: 'Restart key' }), el('div', { className: 'row' }, [set, clear]), note]);
+    };
     const panel = el('div', { className: 'panel' }, [
       el('h1', { textContent: 'Settings' }),
       el('div', { className: 'settings' }, [
@@ -1034,6 +1096,7 @@ export class UI {
         toggle('set-aim', 'Aim guide', 'aimGuide'),
         toggle('set-timer', 'Show timer', 'showTimer'),
         toggle('set-shake', 'Screen shake', 'shake'),
+        restartKey(),
         choice('Crosshair', 'cursor', [
           ['small', 'Small'],
           ['medium', 'Medium'],
@@ -1060,7 +1123,7 @@ export class UI {
         el('li', { textContent: 'Red girders are solid. Springs bounce you. Purple goop grabs you from any side.' }),
         el('li', { textContent: 'There are no checkpoints. Your run is saved whenever you leave.' }),
         el('li', { textContent: 'Two maps: The Tower (the original, built for Original physics) and The Crane (built for New Age). Both modes work on both.' }),
-        el('li', { textContent: 'Esc pauses. Space works like the mouse button.' }),
+        el('li', { textContent: 'Esc pauses. Space works like the mouse button. You can set a key that restarts the run in Settings.' }),
       ]),
       el('div', { className: 'modes compact' }, [
         el('section', { className: 'card original' }, [

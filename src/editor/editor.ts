@@ -15,6 +15,7 @@ import { checkDoc, cleanName, docToMap, LIMITS, outerWalls, type MapDoc } from '
 import { DUDE, MAP_IDS, MAPS, type MapDef, type MapId, type PlatformDef, type PlatformKind } from '../sim/level';
 import { NA } from '../sim/newage';
 import { HOOK_RANGE } from '../sim/original';
+import { matches, type KeyBind } from '../game/keybind';
 import type { Mode } from '../sim/types';
 import type { Spots } from './codegen';
 
@@ -33,6 +34,8 @@ export interface DraftSource {
   close(): void;
   /** A line about the draft: whether it's been beaten, uploaded... */
   status(doc: MapDoc): string;
+  /** The player's restart key (Settings), which plays the map from the start here. */
+  restartKey(): KeyBind | null;
 }
 
 export type EditorSource = DevSource | DraftSource;
@@ -916,6 +919,7 @@ export function createEditor(host: HTMLElement, source: EditorSource): EditorHan
           'Circles show how far the plunger reaches from each target.',
           'Test here plays from the selected piece, for practice. To upload a map, beat it with Play from the start.',
           'Keys: Del deletes, Ctrl+D duplicates, Ctrl+Z / Ctrl+Y undo and redo, arrows nudge, T tests from the mouse, F fits the map.',
+          draft.restartKey() ? `Your restart key (${draft.restartKey()!.label}) plays from the start, here and during a run.` : 'Set a restart key in Settings to play from the start with one key, here and during a run.',
         ]
       : [
           'Drag a piece to move it; drag its yellow handles to resize.',
@@ -1076,6 +1080,12 @@ export function createEditor(host: HTMLElement, source: EditorSource): EditorHan
   const onKey = (e: KeyboardEvent) => {
     const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement || e.target instanceof HTMLTextAreaElement;
     const ctrl = e.ctrlKey || e.metaKey;
+    if (draft && !typing && matches(draft.restartKey(), e)) {
+      // the player's restart key comes first, even over the editor's own keys
+      e.preventDefault();
+      if (!e.repeat) void test(null);
+      return;
+    }
     if (ctrl && e.key.toLowerCase() === 's') {
       e.preventDefault();
       void save();

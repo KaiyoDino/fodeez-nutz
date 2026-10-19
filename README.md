@@ -27,10 +27,11 @@ To publish it on itch.io, with leaderboards, and have every push to GitHub updat
 | Space | Same as the mouse button, aimed at the pointer |
 | Esc | Pause |
 | F | Fullscreen |
+| Your restart key | Start the run over from the beginning, straight away (set it in Settings; not set by default) |
 
 Your run saves automatically (like Getting Over It), so you can close the tab and continue later. There are still no checkpoints.
 
-Browsers don't allow sound until the page gets a click or key press, so the game opens on a *Click to start* screen and the music begins with that click (it's skipped when the browser allows autoplay). Settings has volume, the aim guide, the crosshair size (small, medium, large) and the zoom (far shows 1920 × 1080 world units like the original on a 1080p screen; normal, the default, is 1.25× closer; close is 1.5×).
+Browsers don't allow sound until the page gets a click or key press, so the game opens on a *Click to start* screen and the music begins with that click (it's skipped when the browser allows autoplay). Settings has volume, the aim guide, the timer (off by default), the restart key, the crosshair size (small, medium, large) and the zoom (far shows 1920 × 1080 world units like the original on a 1080p screen; normal, the default, is 1.25× closer; close is 1.5×). The restart key can be any key, with Ctrl, Alt or Shift if you like, except the ones the game already uses (Space, Esc, F). In the map maker it plays your map from the start, so you can test a change, press it, and be climbing again (`src/game/keybind.ts`).
 
 ## Two maps
 

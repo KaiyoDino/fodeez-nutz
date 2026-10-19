@@ -12,6 +12,7 @@ import { Sim } from '../sim/sim';
 import type { InputEvent, Mode, SimEvent } from '../sim/types';
 import { TICK_RATE } from '../sim/types';
 import { checkAchievements, unlockedWheels, type Achievement } from './achievements';
+import { matches, typing } from './keybind';
 import { Online, type SubmitResult } from './online';
 import { ReplayPlayer, SPEEDS } from './replay-player';
 import { loadSave, runKey, writeSave, ZOOM, type Best, type RunKey, type SaveData, type Settings } from './save';
@@ -108,7 +109,7 @@ export class Game {
     this.ui = new UI(uiRoot, {
       play: (map, mode, fresh) => this.play(map, mode, fresh),
       resume: () => this.resume(),
-      restart: () => this.play(this.sim.mapId, this.sim.mode, true, { back: this.runBack ?? undefined, practiceAt: this.practiceAt ?? undefined }),
+      restart: () => this.restart(),
       quitToTitle: () => this.quitToTitle(),
       settingsChanged: s => this.applySettings(s),
       toggleFullscreen: () => this.toggleFullscreen(),
@@ -257,6 +258,11 @@ export class Game {
     this.renderer.resetView();
     this.ui.hide();
     if (!saved) this.renderer.message(getMap(map).name.toUpperCase(), modeName(mode).toUpperCase(), 2.4, mode === 'original' ? '#ff8a8d' : '#9ff3ff');
+  }
+
+  /** Start the current run over from the beginning (a practice run: from where it started). */
+  private restart(): void {
+    this.play(this.sim.mapId, this.sim.mode, true, { back: this.runBack ?? undefined, practiceAt: this.practiceAt ?? undefined });
   }
 
   private pause(): void {
@@ -458,6 +464,7 @@ export class Game {
         myMaps();
       },
       status: () => this.draftInfo(id).status,
+      restartKey: () => this.save.settings.restartKey,
     });
   }
 
@@ -619,6 +626,16 @@ export class Game {
     c.addEventListener('contextmenu', e => e.preventDefault());
 
     window.addEventListener('keydown', e => {
+      if (this.ui.capturingKey) return;
+      if (matches(this.save.settings.restartKey, e) && !typing(e) && (this.phase === 'playing' || this.phase === 'paused' || this.phase === 'won')) {
+        // the restart key: no question asked (the map maker handles it itself)
+        e.preventDefault();
+        if (e.repeat) return;
+        this.releasePointer();
+        this.audio.ui('select');
+        this.restart();
+        return;
+      }
       if (this.phase === 'replay') {
         this.replayKey(e);
         return;

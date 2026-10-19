@@ -6,6 +6,7 @@ import { hasMap, MAPS, type MapId } from '../sim/level';
 import { isReplay, type RecordedInput, type Replay } from '../sim/replay';
 import { loadSimState, type SimState } from '../sim/sim';
 import type { Mode } from '../sim/types';
+import { readBind, type KeyBind } from './keybind';
 import { readSession, type Session } from './online';
 
 const KEY = 'fodeez-nutz/v1';
@@ -16,6 +17,8 @@ export interface Settings {
   shake: boolean;
   aimGuide: boolean;
   showTimer: boolean;
+  /** Restarts the run from the beginning (and plays from the start in the map maker). Not set by default. */
+  restartKey: KeyBind | null;
   /** Crosshair size. */
   cursor: CursorSize;
   /** How close the camera is. 'far' shows 1920x1080 world px, like the original on a 1080p screen. */
@@ -75,7 +78,7 @@ const prefersReducedMotion = (): boolean => {
   }
 };
 
-export const DEFAULT_SETTINGS: Settings = { music: 0.6, sfx: 0.8, shake: !prefersReducedMotion(), aimGuide: true, showTimer: true, cursor: 'medium', zoom: 'normal' };
+export const DEFAULT_SETTINGS: Settings = { music: 0.6, sfx: 0.8, shake: !prefersReducedMotion(), aimGuide: true, showTimer: false, restartKey: null, cursor: 'medium', zoom: 'normal' };
 
 function empty(): SaveData {
   return { v: 2, settings: { ...DEFAULT_SETTINGS }, runs: {}, best: {}, wins: {}, replays: {}, last: null, progress: { unlocked: {}, fallen: 0, biggestFall: 0 }, wheels: 'standard', online: null };
@@ -93,7 +96,9 @@ function readSettings(raw: Partial<Settings> | undefined): Settings {
     sfx: typeof s.sfx === 'number' ? clamp01(s.sfx) : DEFAULT_SETTINGS.sfx,
     shake: typeof s.shake === 'boolean' ? s.shake : DEFAULT_SETTINGS.shake,
     aimGuide: typeof s.aimGuide === 'boolean' ? s.aimGuide : DEFAULT_SETTINGS.aimGuide,
-    showTimer: typeof s.showTimer === 'boolean' ? s.showTimer : DEFAULT_SETTINGS.showTimer,
+    // The timer used to be on by default. Saves from then (before the restart key existed) start with it off.
+    showTimer: typeof s.showTimer === 'boolean' && 'restartKey' in s ? s.showTimer : DEFAULT_SETTINGS.showTimer,
+    restartKey: readBind(s.restartKey),
     cursor: s.cursor === 'small' || s.cursor === 'medium' || s.cursor === 'large' ? s.cursor : DEFAULT_SETTINGS.cursor,
     zoom: s.zoom === 'far' || s.zoom === 'normal' || s.zoom === 'close' ? s.zoom : DEFAULT_SETTINGS.zoom,
   };
