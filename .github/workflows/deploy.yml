@@ -60,7 +60,13 @@ jobs:
         run: npm ci && npm run build
       - name: Upload to itch.io
         if: steps.setup.outputs.enabled == 'true'
+        shell: bash --noprofile --norc -eo pipefail {0}
         run: |
           curl -sSfL -o butler.zip https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default
           unzip -q butler.zip -d butler && chmod +x butler/butler
-          ./butler/butler push dist "$ITCH_GAME:html5" --userversion "$(date -u +%Y.%m.%d)-${GITHUB_SHA::7}"
+          ./butler/butler push dist "$ITCH_GAME:html5" --userversion "$(date -u +%Y.%m.%d)-${GITHUB_SHA::7}" 2>&1 | tee butler.log || {
+            if grep -q "invalid game" butler.log; then
+              echo "::error::itch.io has no game at $ITCH_GAME for this API key. ITCH_GAME must match the project's address exactly (https://USER.itch.io/GAME is USER/GAME; check the URL field in the project's Edit page), the project must already exist (it can be a draft), and BUTLER_API_KEY must belong to that same itch.io account."
+            fi
+            exit 1
+          }

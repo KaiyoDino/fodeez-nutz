@@ -95,5 +95,6 @@ The map's id is in the list at `https://<your-vercel-address>/api/maps?sort=new`
 | "Sign-in is not set up" | `ITCH_CLIENT_ID` is missing in Vercel, or the project wasn't redeployed after adding it. |
 | itch.io complains about the redirect URI | The OAuth app's redirect URI doesn't exactly match `https://<your-vercel-address>/api/auth/callback`. |
 | "The leaderboard database isn't connected yet" | Upstash isn't connected to the Vercel project, or the project wasn't redeployed. |
+| `itch.io API error (400): /wharf/builds: invalid game` | itch.io has no project at `ITCH_GAME` for that API key. Check the project's address on its Edit page (`https://USER.itch.io/GAME` means `ITCH_GAME` is `USER/GAME`, spelled exactly the same). The project has to exist already (a draft is fine), and the API key has to come from the same itch.io account. |
 | "No more than 12 Serverless Functions can be added to a Deployment on the Hobby plan" | An old build, from before the API was one function. Redeploy from the latest commit. |
 | Progress or sign-in is forgotten on itch.io | The browser blocks storage for games in frames (Safari, or Chrome with third-party cookies blocked). The game still runs, but forgets between visits. Those players can play the Vercel copy, where saving works normally. |
